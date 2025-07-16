@@ -6,13 +6,14 @@ import numpy as np
 import easyocr
 from datetime import datetime
 
-# ---------- CONFIG ----------
+# ───── CONFIG ──────────────────────────────────────────────────────
 ROOMS                   = ["Living", "Kitchen", "Bedroom", "Bathroom", "Entryway", "Yard"]
 BASE_DIR                = os.path.join(os.path.dirname(__file__), "LogCabin")
-MATCH_THRESHOLD         = 0.8   # template-match confidence
-BINARY_THRESH           = 30    # increased to ignore more subtle shifts
-PIXEL_COUNT_THRESHOLD   = 1000  # increased to ignore small changes
-# -----------------------------
+HEATMAP_SUBFOLDER       = "heatmaps"     # new subfolder for heatmaps
+MATCH_THRESHOLD         = 0.8
+BINARY_THRESH           = 20
+PIXEL_COUNT_THRESHOLD = 400
+# ────────────────────────────────────────────────────────────────────
 
 # Initialize OCR reader
 reader = easyocr.Reader(['en'], gpu=False)
@@ -87,6 +88,7 @@ def process_room():
     """
     Capture screen, detect room, and for each baseline region:
     diff that crop, then flag if pixel_count > PIXEL_COUNT_THRESHOLD.
+    Heatmaps are saved under LogCabin/<Room>/heatmaps/.
     Returns (room, anomalies, None).
     """
     time.sleep(0.2)
@@ -96,8 +98,13 @@ def process_room():
     if not room or tpl_img is None:
         return None, [], None
 
+    # mask dynamic UI
     img_m = mask_dynamic(img)
     tpl_m = mask_dynamic(tpl_img)
+
+    # ensure the heatmap directory exists
+    heat_dir = os.path.join(BASE_DIR, room, HEATMAP_SUBFOLDER)
+    os.makedirs(heat_dir, exist_ok=True)
 
     anomalies = []
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -115,9 +122,11 @@ def process_room():
         if pix_count > PIXEL_COUNT_THRESHOLD:
             heat = cv2.applyColorMap(binm, cv2.COLORMAP_JET)
             overlay = cv2.addWeighted(live_crop, 0.7, heat, 0.5, 0)
+            # save into the heatmaps subfolder
             fname = f"{room}_{cls}_{ts}_HEAT.png"
-            heat_path = os.path.join(BASE_DIR, room, fname)
+            heat_path = os.path.join(heat_dir, fname)
             cv2.imwrite(heat_path, overlay)
+
             anomalies.append({
                 "class_name": cls,
                 "box": region["box"],

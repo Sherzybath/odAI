@@ -30,10 +30,10 @@ class Overlay(QtWidgets.QWidget):
         main_layout.setSpacing(10)
 
         # Exit button
-        btn_exit = QtWidgets.QPushButton("Exit", self)
-        btn_exit.setGeometry(screen.width()-110, 20, 80, 30)
-        btn_exit.setStyleSheet("background-color: rgba(255,255,255,200); font-weight:bold;")
-        btn_exit.clicked.connect(QtWidgets.QApplication.instance().quit)
+        # btn_exit = QtWidgets.QPushButton("Exit", self)
+        # btn_exit.setGeometry(screen.width()-110, 20, 80, 30)
+        # btn_exit.setStyleSheet("background-color: rgba(255,255,255,200); font-weight:bold;")
+        # btn_exit.clicked.connect(QtWidgets.QApplication.instance().quit)
 
         # Left panel
         left_panel = QtWidgets.QFrame()
@@ -83,8 +83,8 @@ class Overlay(QtWidgets.QWidget):
         self.right_panel = QtWidgets.QFrame()
         self.right_panel.setStyleSheet("background:transparent;")
         self.right_layout = QtWidgets.QVBoxLayout(self.right_panel)
-        self.right_layout.setContentsMargins(5,5,5,5)
-        self.right_layout.setSpacing(10)
+        self.right_layout.setContentsMargins(2,2,2,2)
+        self.right_layout.setSpacing(5)
         main_layout.addWidget(self.right_panel, 1)
 
         # Debounce state
@@ -108,44 +108,77 @@ class Overlay(QtWidgets.QWidget):
     def appendLog(self, msg):
         self.log_text.append(f"{datetime.now().strftime('%H:%M:%S')} – {msg}")
 
-    def clearRight(self):
-        while self.right_layout.count():
-            w = self.right_layout.takeAt(0).widget()
-            if w: w.deleteLater()
+    def clearRightPanel(self):
+        """Recursively remove every widget and layout from the right panel."""
+        def clear_layout(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                # if it's a widget, delete it
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+                # if it's a nested layout, clear that too
+                child = item.layout()
+                if child:
+                    clear_layout(child)
 
-    def openAnomalies(self, room):
-        # reset row
-        lbl = self.left_labels[room]; btn = self.left_buttons[room]
-        lbl.setText(f"{room}: No data"); lbl.setStyleSheet("color:black;")
+        clear_layout(self.right_layout)
+
+    def openAnomalies(self, room: str):
+        anomalies = self.anomalies.get(room, [])
+
+        # Reset that room’s row state
+        lbl = self.left_labels[room]
+        btn = self.left_buttons[room]
+        lbl.setText(f"{room}: No data")
+        lbl.setStyleSheet("color: black;")
         btn.setEnabled(False)
 
-        self.clearRight()
-        # close button
-        c = QtWidgets.QPushButton("✕"); c.setFixedSize(24,24)
-        c.setStyleSheet("background: rgba(255,255,255,200);")
-        c.clicked.connect(self.clearRight)
-        self.right_layout.addWidget(c, alignment=QtCore.Qt.AlignRight)
+        # 1) Clear out anything left in right panel
+        self.clearRightPanel()
 
-        for a in self.anomalies[room]:
-            hdr = QtWidgets.QLabel(f"{a['class_name']}: {a['pixel_count']} px")
-            hdr.setStyleSheet("color:white; font-weight:bold;")
+        # 2) Add a close ("✕") button at the top
+        close_btn = QtWidgets.QPushButton("✕")
+        close_btn.setFixedSize(24,24)
+        close_btn.setStyleSheet("background-color: rgba(255,255,255,200);")
+        close_btn.clicked.connect(self.clearRightPanel)
+        self.right_layout.addWidget(close_btn, alignment=QtCore.Qt.AlignRight)
+
+        # 3) Repopulate with the new anomaly images
+        for a in anomalies:
+            cls = a["class_name"]
+            pix = a["pixel_count"]
+            heat_path = a["heatmap_path"]
+
+            hdr = QtWidgets.QLabel(f"{cls}: {pix} px changed")
+            hdr.setStyleSheet("color: white; font-weight: bold;")
             self.right_layout.addWidget(hdr)
-            cont = QtWidgets.QHBoxLayout()
-            self.right_layout.addLayout(cont)
-            # heatmap
-            hp = a['heatmap_path']
-            if hp and os.path.exists(hp):
-                pm = QtGui.QPixmap(hp).scaled(400,400,QtCore.Qt.KeepAspectRatio)
-                l = QtWidgets.QLabel(); l.setPixmap(pm); cont.addWidget(l)
+
+            row = QtWidgets.QHBoxLayout()
+            self.right_layout.addLayout(row)
+
+            # Heatmap
+            if heat_path and os.path.exists(heat_path):
+                pixmap = QtGui.QPixmap(heat_path).scaled(
+                    400, 400, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                )
+                lbl_h = QtWidgets.QLabel()
+                lbl_h.setPixmap(pixmap)
+                row.addWidget(lbl_h)
             else:
-                cont.addWidget(QtWidgets.QLabel("(no heatmap)"))
-            # template
-            tp = os.path.join(BASE_DIR, room, "group_templates", f"{a['class_name']}.png")
-            if os.path.exists(tp):
-                pm = QtGui.QPixmap(tp).scaled(400,400,QtCore.Qt.KeepAspectRatio)
-                l2 = QtWidgets.QLabel(); l2.setPixmap(pm); cont.addWidget(l2)
+                row.addWidget(QtWidgets.QLabel("(no heatmap)"))
+
+            # Template crop
+            tpl_path = os.path.join(BASE_DIR, room, "group_templates", f"{cls}.png")
+            if os.path.exists(tpl_path):
+                pixmap = QtGui.QPixmap(tpl_path).scaled(
+                    400, 400, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                )
+                lbl_t = QtWidgets.QLabel()
+                lbl_t.setPixmap(pixmap)
+                row.addWidget(lbl_t)
             else:
-                cont.addWidget(QtWidgets.QLabel("(no tpl)"))
+                row.addWidget(QtWidgets.QLabel("(no template)"))
 
     def pollKeys(self):
         now = time.time()
