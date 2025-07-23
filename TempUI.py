@@ -2,19 +2,28 @@ import os
 import sys
 import time
 import keyboard
+import json
 from datetime import datetime
 from PyQt5 import QtCore, QtGui, QtWidgets
-import backend  # your backend.py with process_room()
-
+import backend  # your backend.py with process_room
+import shutil
+from backend import classify_heatmap, save_classification_signature
+from PyQt5.QtMultimedia import QSoundEffect
 # Constants
-ROOMS    = backend.ROOMS
-DEBOUNCE = 0.5
-BASE_DIR = os.path.join(os.path.dirname(__file__), "LogCabin")
+ROOMS            = backend.ROOMS
+DEBOUNCE         = 0.5
+BASE_DIR         = os.path.join(os.path.dirname(__file__), "LogCabin")
+CLASS_MAP_PATH   = os.path.join(BASE_DIR, "classification_map.json")
+ANOMALY_TYPES    = [
+    "Dead body", "Door anomaly", "Extra object", "Image anomaly",
+    "Intruder", "Missing object", "Object Manipulation",
+    "Object Movement", "Object Replacement"
+]
+CLASSIFICATION_DIR = os.path.join(BASE_DIR, "classifications")
 
 class Overlay(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        # Frameless, always-on-top, tool window
         flags = (QtCore.Qt.FramelessWindowHint |
                  QtCore.Qt.WindowStaysOnTopHint |
                  QtCore.Qt.Tool)
@@ -23,25 +32,25 @@ class Overlay(QtWidgets.QWidget):
 
         screen = QtWidgets.QApplication.primaryScreen().size()
         self.setGeometry(0, 0, screen.width(), screen.height())
+        self.anomalies = { r: [] for r in ROOMS }
 
-        # Layouts
+        if os.path.exists(CLASS_MAP_PATH):
+            with open(CLASS_MAP_PATH, "r") as f:
+                self.class_map = json.load(f)
+        else:
+            self.class_map = {}
+
         main_layout = QtWidgets.QHBoxLayout(self)
         main_layout.setContentsMargins(10,10,10,10)
         main_layout.setSpacing(10)
 
-        # Exit button
-        # btn_exit = QtWidgets.QPushButton("Exit", self)
-        # btn_exit.setGeometry(screen.width()-110, 20, 80, 30)
-        # btn_exit.setStyleSheet("background-color: rgba(255,255,255,200); font-weight:bold;")
-        # btn_exit.clicked.connect(QtWidgets.QApplication.instance().quit)
-
-        # Left panel
-        left_panel = QtWidgets.QFrame()
-        left_panel.setFixedWidth(300)
-        left_panel.setStyleSheet("background: rgba(255,255,255,230); border-radius:5px;")
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(5,5,5,5)
-        left_layout.setSpacing(10)
+        # Left column to hold all vertical panels
+        left_column = QtWidgets.QFrame()
+        left_column.setFixedWidth(300)
+        left_column.setStyleSheet("background: rgba(255,255,255,230); border-radius:5px;")
+        left_column_layout = QtWidgets.QVBoxLayout(left_column)
+        left_column_layout.setContentsMargins(5,5,5,5)
+        left_column_layout.setSpacing(10)
 
         # Rooms box
         rooms_box = QtWidgets.QFrame()
@@ -52,7 +61,6 @@ class Overlay(QtWidgets.QWidget):
 
         self.left_labels  = {}
         self.left_buttons = {}
-        self.anomalies    = {r: [] for r in ROOMS}
 
         for room in ROOMS:
             row = QtWidgets.QWidget()
@@ -66,7 +74,29 @@ class Overlay(QtWidgets.QWidget):
             self.left_buttons[room] = btn
             btn.clicked.connect(lambda _, r=room: self.openAnomalies(r))
 
-        left_layout.addWidget(rooms_box, 0)
+        left_column_layout.addWidget(rooms_box, 0)
+
+        # Center classification panel (dropdown + confirm button)
+        self.center_panel = QtWidgets.QFrame()
+        self.center_panel.setStyleSheet("background:white; border:1px solid #AAA; border-radius:3px;")
+        self.center_layout = QtWidgets.QVBoxLayout(self.center_panel)
+        self.center_layout.setContentsMargins(5,5,5,5)
+        self.center_layout.setSpacing(5)
+
+        self.class_display_label = QtWidgets.QLabel("Select classification type for current anomaly.")
+        self.class_display_label.setWordWrap(True)
+        self.center_layout.addWidget(self.class_display_label)
+
+        self.class_dropdown = QtWidgets.QComboBox()
+        self.class_dropdown.addItem("Select anomaly type…")
+        self.class_dropdown.addItems(ANOMALY_TYPES)
+        self.center_layout.addWidget(self.class_dropdown)
+
+        self.confirm_button = QtWidgets.QPushButton("Confirm Classification")
+        self.confirm_button.setEnabled(False)
+        self.center_layout.addWidget(self.confirm_button)
+
+        left_column_layout.addWidget(self.center_panel, 0)
 
         # Log box
         log_box = QtWidgets.QFrame()
@@ -75,27 +105,30 @@ class Overlay(QtWidgets.QWidget):
         log_l.setContentsMargins(5,5,5,5)
         self.log_text = QtWidgets.QTextEdit(); self.log_text.setReadOnly(True)
         log_l.addWidget(self.log_text)
-        left_layout.addWidget(log_box, 1)
+        left_column_layout.addWidget(log_box, 1)
 
-        main_layout.addWidget(left_panel, 0)
+        main_layout.addWidget(left_column, 0)
 
         # Right panel
         self.right_panel = QtWidgets.QFrame()
         self.right_panel.setStyleSheet("background:transparent;")
         self.right_layout = QtWidgets.QVBoxLayout(self.right_panel)
-        self.right_layout.setContentsMargins(2,2,2,2)
-        self.right_layout.setSpacing(5)
+        self.right_layout.setContentsMargins(0,0,0,0)
+        self.right_layout.setSpacing(0)
         main_layout.addWidget(self.right_panel, 1)
 
-        # Debounce state
         self.last6 = 0
         self.lastF12 = 0
         self.last8 = 0
 
-        # Timer to poll keys on the main thread
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.pollKeys)
         self.timer.start(50)
+
+        # Anomaly sound
+        self.anomaly_sound = QSoundEffect()
+        self.anomaly_sound.setSource(QtCore.QUrl.fromLocalFile("anomaly.wav"))
+        self.anomaly_sound.setVolume(0.8)  # 0.0 to 1.0
 
     def paintEvent(self, ev):
         p = QtGui.QPainter(self)
@@ -109,84 +142,85 @@ class Overlay(QtWidgets.QWidget):
         self.log_text.append(f"{datetime.now().strftime('%H:%M:%S')} – {msg}")
 
     def clearRightPanel(self):
-        """Recursively remove every widget and layout from the right panel."""
         def clear_layout(layout):
             while layout.count():
                 item = layout.takeAt(0)
-                # if it's a widget, delete it
                 w = item.widget()
                 if w:
                     w.deleteLater()
-                # if it's a nested layout, clear that too
                 child = item.layout()
                 if child:
                     clear_layout(child)
-
         clear_layout(self.right_layout)
 
     def openAnomalies(self, room: str):
+        
         anomalies = self.anomalies.get(room, [])
-
-        # Reset that room’s row state
         lbl = self.left_labels[room]
         btn = self.left_buttons[room]
         lbl.setText(f"{room}: No data")
         lbl.setStyleSheet("color: black;")
         btn.setEnabled(False)
-
-        # 1) Clear out anything left in right panel
         self.clearRightPanel()
 
-        # 2) Add a close ("✕") button at the top
+        self.class_display_label.setText(f"Room: {room}\nDetected anomalies: {len(anomalies)}")
+
         close_btn = QtWidgets.QPushButton("✕")
         close_btn.setFixedSize(24,24)
         close_btn.setStyleSheet("background-color: rgba(255,255,255,200);")
         close_btn.clicked.connect(self.clearRightPanel)
         self.right_layout.addWidget(close_btn, alignment=QtCore.Qt.AlignRight)
 
-        # 3) Repopulate with the new anomaly images
+        self.grouped_heatmaps = []
+
+
         for a in anomalies:
-            cls = a["class_name"]
-            pix = a["pixel_count"]
-            heat_path = a["heatmap_path"]
+            cls = a.get("class_name", a.get("class", "Unknown"))
+            pix = a.get("pixel_count", "?")
+            heat = a.get("heatmap_path", None)
 
             hdr = QtWidgets.QLabel(f"{cls}: {pix} px changed")
-            hdr.setStyleSheet("color: white; font-weight: bold;")
+            hdr.setStyleSheet("color: white; font-weight: bold; margin: 0px; padding: 0px;")
+            hdr.setContentsMargins(0, 0, 0, 0)
             self.right_layout.addWidget(hdr)
 
             row = QtWidgets.QHBoxLayout()
-            self.right_layout.addLayout(row)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(0)
+            container = QtWidgets.QWidget()
+            container.setLayout(row)
+            container.setContentsMargins(0, 0, 0, 0)
+            self.right_layout.addWidget(container)
 
-            # Heatmap
-            if heat_path and os.path.exists(heat_path):
-                pixmap = QtGui.QPixmap(heat_path).scaled(
-                    400, 400, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
-                )
-                lbl_h = QtWidgets.QLabel()
-                lbl_h.setPixmap(pixmap)
+            if heat and os.path.exists(heat):
+                self.grouped_heatmaps.append(heat)
+                pm = QtGui.QPixmap(heat).scaled(400,400,QtCore.Qt.KeepAspectRatio)
+                lbl_h = QtWidgets.QLabel(); lbl_h.setPixmap(pm)
                 row.addWidget(lbl_h)
             else:
                 row.addWidget(QtWidgets.QLabel("(no heatmap)"))
 
-            # Template crop
-            tpl_path = os.path.join(BASE_DIR, room, "group_templates", f"{cls}.png")
-            if os.path.exists(tpl_path):
-                pixmap = QtGui.QPixmap(tpl_path).scaled(
-                    400, 400, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
-                )
-                lbl_t = QtWidgets.QLabel()
-                lbl_t.setPixmap(pixmap)
+            tpl = os.path.join(BASE_DIR, room, "group_templates", f"{cls}.png")
+            if os.path.exists(tpl):
+                pm2 = QtGui.QPixmap(tpl).scaled(400,400,QtCore.Qt.KeepAspectRatio)
+                lbl_t = QtWidgets.QLabel(); lbl_t.setPixmap(pm2)
                 row.addWidget(lbl_t)
             else:
                 row.addWidget(QtWidgets.QLabel("(no template)"))
 
+        self.confirm_button.setEnabled(True)
+        try:
+            self.confirm_button.clicked.disconnect()
+        except:
+            pass
+        self.confirm_button.clicked.connect(lambda: self.handle_classification(room, self.grouped_heatmaps))
+
+
     def pollKeys(self):
         now = time.time()
-        # F12 toggle
         if keyboard.is_pressed("f12") and now - self.lastF12 > DEBOUNCE:
             self.lastF12 = now
             self.toggle()
-        # check anomalies
         if keyboard.is_pressed("6") and now - self.last6 > DEBOUNCE:
             self.last6 = now
             try:
@@ -200,21 +234,41 @@ class Overlay(QtWidgets.QWidget):
                 self.anomalies[room] = anom
                 lbl = self.left_labels[room]; btn = self.left_buttons[room]
                 if anom:
+                    self.anomaly_sound.play()
                     lbl.setText(f"{room}: {len(anom)} anomaly(s)")
                     lbl.setStyleSheet("color:red;"); btn.setEnabled(True)
                     self.appendLog(
-                        f"{room}: {len(anom)} anomalies – " +
-                        ", ".join(f"{a['class_name']}({a['pixel_count']})" for a in anom)
+                        f"{room}: {len(anom)} anomalies – " + ", ".join(f"{a.get('class_name', a.get('class'))}({a.get('pixel_count', '?')})" for a in anom)
                     )
                 else:
                     lbl.setText(f"{room}: No anomalies")
                     lbl.setStyleSheet("color:lightgreen;"); btn.setEnabled(False)
                     self.appendLog(f"{room}: No anomalies detected")
-        # Exit
         if keyboard.is_pressed("8") and now - self.last8 > DEBOUNCE:
             self.last8 = now
             QtWidgets.QApplication.instance().quit()
 
+    def handle_classification(self, room, heatmap_paths):
+        atype = self.class_dropdown.currentText()
+        if atype == "Select anomaly type…":
+            QtWidgets.QMessageBox.warning(self, "Warning", "Please select a valid anomaly type.")
+            return
+
+        if not heatmap_paths:
+            QtWidgets.QMessageBox.warning(self, "Warning", "No heatmaps selected.")
+            return  
+
+        try:
+            saved_paths = []
+            for path in heatmap_paths:
+                saved_path = backend.classify_heatmap(room, path, atype)
+                backend.save_classification_signature(path, atype)
+                saved_paths.append(saved_path)
+
+            QtWidgets.QMessageBox.information(self, "Saved", f"Saved {len(saved_paths)} heatmap(s) as '{atype}'.")
+            self.appendLog(f"Saved classification: {atype} for {room} – {len(saved_paths)} heatmap(s)")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)

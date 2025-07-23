@@ -5,14 +5,18 @@ import mss
 import numpy as np
 import easyocr
 from datetime import datetime
+import json
+import shutil
 
 # ───── CONFIG ──────────────────────────────────────────────────────
-ROOMS                   = ["Living", "Kitchen", "Bedroom", "Bathroom", "Entryway", "Yard"]
+ROOMS                   = ["Yard","Entryway","Living", "Kitchen", "Bedroom", "Bathroom"  ]
 BASE_DIR                = os.path.join(os.path.dirname(__file__), "LogCabin")
 HEATMAP_SUBFOLDER       = "heatmaps"     # new subfolder for heatmaps
 MATCH_THRESHOLD         = 0.8
 BINARY_THRESH           = 20
 PIXEL_COUNT_THRESHOLD = 400
+CLASSIFICATION_MAP = os.path.join(BASE_DIR, "classification_map.json")
+CLASSIFICATION_DIR = os.path.join(BASE_DIR, "classifications")
 # ────────────────────────────────────────────────────────────────────
 
 # Initialize OCR reader
@@ -23,7 +27,11 @@ template_images = {
     room: cv2.imread(os.path.join(BASE_DIR, room, "template.png"))
     for room in ROOMS
 }
-
+if os.path.exists(CLASSIFICATION_MAP):
+    with open(CLASSIFICATION_MAP, "r") as f:
+        classification_map = json.load(f)
+else:
+    classification_map = {}
 # Pre-load cropped regions per room
 group_templates = {}
 for room in ROOMS:
@@ -135,3 +143,17 @@ def process_room():
             })
 
     return room, anomalies, None
+def save_classification_signature(signature: str, anomaly_type: str):
+    classification_map[signature] = anomaly_type
+    os.makedirs(BASE_DIR, exist_ok=True)
+    with open(CLASSIFICATION_MAP, "w") as f:
+        json.dump(classification_map, f, indent=2)
+
+def classify_heatmap(room: str, heatmap_path: str, anomaly_type: str):
+    if not anomaly_type or not os.path.exists(heatmap_path):
+        raise ValueError("Invalid anomaly type or heatmap path")
+
+    dest_dir = os.path.join(CLASSIFICATION_DIR, room, anomaly_type)
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copy(heatmap_path, dest_dir)
+    return os.path.join(dest_dir, os.path.basename(heatmap_path))

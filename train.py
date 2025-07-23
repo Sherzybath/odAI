@@ -1,21 +1,20 @@
 import os
+import sys
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 from PIL import Image, ImageTk
 
 # ───── CONFIG ──────────────────────────────────────────────────────
-ROOMS    = ["Living", "Kitchen", "Bedroom", "Bathroom", "Entryway", "Yard"]
+ROOMS    = ["Yard","Entryway","Living", "Kitchen", "Bedroom", "Bathroom"  ]
 BASE_DIR = os.path.join(os.path.dirname(__file__), "LogCabin")
-# Maximum display size for the cropping window
 MAX_W, MAX_H = 1920, 1080
 # ────────────────────────────────────────────────────────────────────
 
 def ensure_dirs():
     for room in ROOMS:
-        d = os.path.join(BASE_DIR, room, "group_templates")
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(os.path.join(BASE_DIR, room, "group_templates"), exist_ok=True)
 
-class CropTool:
+class RectCropTool:
     def __init__(self, room):
         self.room = room
         tpl_path = os.path.join(BASE_DIR, room, "template.png")
@@ -27,101 +26,93 @@ class CropTool:
         ow, oh = self.orig_img.size
 
         # Compute scale to fit within MAX_W x MAX_H
-        scale = min(MAX_W / ow, MAX_H / oh, 1.0)
-        self.scale = scale
-        dw, dh = int(ow * scale), int(oh * scale)
+        self.scale = min(MAX_W/ow, MAX_H/oh, 1.0)
+        dw, dh = int(ow * self.scale), int(oh * self.scale)
+        disp_img = self.orig_img.resize((dw, dh), Image.LANCZOS)
 
-        # Resize for display using LANCZOS (high-quality downsampling)
-        disp_img = self.orig_img.resize((dw, dh), resample=Image.LANCZOS)
-
-        # Create the Tk root before any PhotoImage
+        # Set up window
         self.root = tk.Tk()
         self.root.title(f"Crop: {room}")
         self.tkimg = ImageTk.PhotoImage(disp_img, master=self.root)
-
-        # Canvas setup
-        self.canvas = tk.Canvas(self.root, width=dw, height=dh, cursor="cross")
+        self.canvas = tk.Canvas(self.root, width=dw, height=dh, cursor="tcross")
         self.canvas.pack()
         self.canvas.create_image(0, 0, anchor="nw", image=self.tkimg)
 
-        # Bind mouse events
-        self.start = None
-        self.rect  = None
-        self.canvas.bind("<ButtonPress-1>",    self.on_button_press)
-        self.canvas.bind("<B1-Motion>",        self.on_move)
-        self.canvas.bind("<ButtonRelease-1>",  self.on_button_release)
+        # State: two clicks
+        self.points = []  # [(x0,y0), (x1,y1)]
+        self.rect_id = None
 
-        # Control buttons
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(fill="x", pady=5)
-        tk.Button(btn_frame, text="Next Room", command=self.on_next).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="Quit",      command=self.on_quit).pack(side="right", padx=5)
+        # Bind clicks
+        self.canvas.bind("<Button-1>", self.on_click)
+        self.root.bind("<Escape>", lambda e: self.on_skip())
+
+        # Instructions
+        instr = "Click once for top-left, click again for bottom-right.\nPress Esc to skip room."
+        tk.Label(self.root, text=instr, bg="white").place(x=10, y=10)
 
         self.root.mainloop()
 
-    def on_button_press(self, event):
-        self.start = (event.x, event.y)
-        if self.rect:
-            self.canvas.delete(self.rect)
-            self.rect = None
+    def on_click(self, event):
+        x, y = event.x, event.y
+        if len(self.points) == 0:
+            # First click
+            self.points = [(x, y)]
+            r = 4
+            self.canvas.create_oval(x-r, y-r, x+r, y+r, fill="red", outline="")
+        else:
+            # Second click
+            self.points.append((x, y))
+            x0, y0 = self.points[0]
+            x1, y1 = self.points[1]
+            # Normalize
+            x0, x1 = sorted((max(0, x0), min(self.tkimg.width(), x1)))
+            y0, y1 = sorted((max(0, y0), min(self.tkimg.height(), y1)))
+            # Draw rectangle
+            if self.rect_id:
+                self.canvas.delete(self.rect_id)
+            self.rect_id = self.canvas.create_rectangle(x0, y0, x1, y1, outline="blue", width=2)
+            self.finish_crop()
 
-    def on_move(self, event):
-        if not self.start:
-            return
-        x0, y0 = self.start
-        x1, y1 = event.x, event.y
-        if self.rect:
-            self.canvas.delete(self.rect)
-        self.rect = self.canvas.create_rectangle(x0, y0, x1, y1,
-                                                 outline="red", width=2)
-
-    def on_button_release(self, event):
-        if not self.start:
-            return
-        x0, y0 = self.start
-        x1, y1 = event.x, event.y
-        x0, x1 = sorted((max(0, x0), min(self.tkimg.width(), x1)))
-        y0, y1 = sorted((max(0, y0), min(self.tkimg.height(), y1)))
-        if (x1 - x0) < 5 or (y1 - y0) < 5:
-            messagebox.showwarning("Too small", "Drag a larger area")
+    def finish_crop(self):
+        x0, y0 = self.points[0]
+        x1, y1 = self.points[1]
+        # Minimum size check
+        if abs(x1 - x0) < 10 or abs(y1 - y0) < 10:
+            messagebox.showwarning("Too small", "Selection must be at least 10×10 pixels.")
+            self.points = []
+            if self.rect_id:
+                self.canvas.delete(self.rect_id)
+                self.rect_id = None
             return
 
+        # Ask for class name
         name = simpledialog.askstring("Class name", f"Name this crop in '{self.room}':")
         if not name:
+            self.points = []
             return
 
-        # Map cropped coordinates back to original image
+        # Map back to original coordinates
         ox0, oy0 = int(x0 / self.scale), int(y0 / self.scale)
         ox1, oy1 = int(x1 / self.scale), int(y1 / self.scale)
         crop = self.orig_img.crop((ox0, oy0, ox1, oy1))
 
+        # Save crop
         out_dir = os.path.join(BASE_DIR, self.room, "group_templates")
         out_path = os.path.join(out_dir, f"{name}.png")
         crop.save(out_path)
         messagebox.showinfo("Saved", f"Saved to:\n{out_path}")
-
-        # Clear rectangle
-        if self.rect:
-            self.canvas.delete(self.rect)
-            self.rect = None
-        self.start = None
-
-    def on_next(self):
         self.root.destroy()
 
-    def on_quit(self):
-        if messagebox.askyesno("Quit", "Abort cropping?"):
-            self.root.destroy()
-            raise SystemExit
+    def on_skip(self):
+        # Skip this room without saving
+        self.root.destroy()
 
 if __name__ == "__main__":
     ensure_dirs()
     for room in ROOMS:
         try:
-            CropTool(room)
+            RectCropTool(room)
         except FileNotFoundError:
-            print(f"[SKIP] No template in {room}")
-        except SystemExit:
-            print("[ABORT] Cropping cancelled.")
-            break
+            print(f"[SKIP] No template for {room}")
     print("✅ Cropping complete.")
+
