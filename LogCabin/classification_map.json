@@ -1,5 +1,20 @@
 {
   "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bedroom\\heatmaps\\Bedroom_Table2_20250723_190804_HEAT.png": "Intruder",
   "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bedroom\\heatmaps\\Bedroom_Bed1_20250723_201057_HEAT.png": "Object Replacement",
-  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bedroom\\heatmaps\\Bedroom_Table2_20250723_201057_HEAT.png": "Object Replacement"
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bedroom\\heatmaps\\Bedroom_Table2_20250723_201057_HEAT.png": "Object Replacement",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Living\\heatmaps\\Living_TV_20250724_183914_HEAT.png": "Other",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bathroom\\heatmaps\\Bathroom_Door_20250724_184042_HEAT.png": "Missing object",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Kitchen\\heatmaps\\Kitchen_Table_20250724_184640_HEAT.png": "Other",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Kitchen\\heatmaps\\Kitchen_Window_20250724_184640_HEAT.png": "Other",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Yard\\heatmaps\\Yard_Porch_20250724_185033_HEAT.png": "Extra object",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Living\\heatmaps\\Living_Painting2_20250725_194539_HEAT.png": "Image anomaly",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Kitchen\\heatmaps\\Kitchen_Table_20250725_194849_HEAT.png": "Other",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Kitchen\\heatmaps\\Kitchen_Window_20250725_194849_HEAT.png": "Other",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bathroom\\heatmaps\\Bathroom_Door_20250725_195014_HEAT.png": "Extra object",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bathroom\\heatmaps\\Bathroom_Stool2_20250725_195014_HEAT.png": "Extra object",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bathroom\\heatmaps\\Bathroom_Towel1_20250725_195014_HEAT.png": "Extra object",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Kitchen\\heatmaps\\Kitchen_Counter_20250725_195309_HEAT.png": "Object Movement",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Kitchen\\heatmaps\\Kitchen_Shelfs_20250725_195309_HEAT.png": "Object Movement",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bedroom\\heatmaps\\Bedroom_Bed1_20250725_195401_HEAT.png": "Object Replacement",
+  "c:\\Users\\sdzyr\\Desktop\\Project\\odAI\\LogCabin\\Bedroom\\heatmaps\\Bedroom_Table2_20250725_195401_HEAT.png": "Object Replacement"
 }
