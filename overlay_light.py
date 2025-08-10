@@ -8,7 +8,10 @@ import psutil
 import os
 import backend
 import pyautogui
+from backend import move_cursor_to_anomaly
+import numpy as np
 pyautogui.FAILSAFE = False
+
 class AnomalyNotification(QtWidgets.QWidget):
     def __init__(self, message):
         super().__init__()
@@ -49,7 +52,6 @@ class AnomalyDetector(QtCore.QObject):
             except Exception as e:
                 self.errorOccurred.emit(str(e))
             time.sleep(5)
-
 
 class OverlayLight(QtWidgets.QWidget):
     def __init__(self):
@@ -110,7 +112,7 @@ class OverlayLight(QtWidgets.QWidget):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.pollKeys)
         self.timer.start(50)
-
+    
     def paintEvent(self, ev):
         p = QtGui.QPainter(self)
         p.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 160))
@@ -140,7 +142,12 @@ class OverlayLight(QtWidgets.QWidget):
     def appendLog(self, msg):
         timestamp = time.strftime("%H:%M:%S")
         self.log_panel.append(f"[{timestamp}] {msg}")
+    
 
+    
+
+
+    
     def start_automation(self):
         if self.automating:
             self.appendLog("Automation is already running.")
@@ -179,32 +186,29 @@ class OverlayLight(QtWidgets.QWidget):
 
         self.automating = False
 
+   
+
     def handle_detection(self, room, anomalies, heat_path):
-        if room:
-            self.appendLog(f"Room: {room} – Detected {len(anomalies)} anomaly/anomalies.")
-            if anomalies:
-                self.stop_automation()
-                self.display_heatmap(heat_path)
-                self.notify_anomaly(f"Anomaly detected in {room}!")
-
-                coords = backend.get_anomaly_coordinates(anomalies)
-                if coords:
-                    x, y = coords
-                    pyautogui.moveTo(x, y)
-                    self.appendLog(f"Mouse moved to anomaly at ({x}, {y})")
-
-                    # Long click (2 seconds)
-                    pyautogui.mouseDown()
-                    self.appendLog("Mouse button held down.")
-                    time.sleep(2)
-                    pyautogui.mouseUp()
-                    self.appendLog("Mouse button released after 2 seconds.")
-                else:
-                    self.appendLog("No anomaly coordinates found.")
-
-                
-        else:
+        if not room:
             self.appendLog("Room detection failed.")
+            return
+
+        self.appendLog(f"Room: {room} – Detected {len(anomalies)} anomaly/anomalies.")
+        if not anomalies:
+            return
+
+        self.stop_automation()
+        self.notify_anomaly(f"Anomaly detected in {room}!")
+
+        coords = backend.get_anomaly_coordinates(anomalies)
+        if not coords:
+            self.appendLog("No anomaly coordinates found.")
+            return
+
+        # Call backend to do the cursor movement + click + dropdown
+        move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
+            
+        
 
     def handle_error(self, error_msg):
         self.appendLog(f"Error during detection: {error_msg}")
@@ -213,7 +217,7 @@ class OverlayLight(QtWidgets.QWidget):
         if not heat_path:
             self.appendLog("Heatmap path is None.")
             self.heatmap_image.setText("(heatmap not found)")
-            self.original_image.setText("(original not found)")
+            self.original_image.setText("(original not found)") 
             return
 
         try:
@@ -242,7 +246,6 @@ class OverlayLight(QtWidgets.QWidget):
 
 
 def launch():
-    
     app = QtWidgets.QApplication(sys.argv)
     overlay = OverlayLight()
     overlay.show()

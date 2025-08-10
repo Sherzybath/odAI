@@ -7,7 +7,9 @@ import easyocr
 from datetime import datetime
 import json
 import shutil
-
+import pyautogui
+from PIL import ImageGrab
+import cv2
 # ───── CONFIG ──────────────────────────────────────────────────────
 ROOMS                   = ["Yard","Entryway","Living", "Kitchen", "Bedroom", "Bathroom"  ]
 BASE_DIR                = os.path.join(os.path.dirname(__file__), "LogCabin")
@@ -62,12 +64,6 @@ def detect_room_name(img):
                 return room
     return None
 
-# def mask_dynamic(img):
-#     h, w = img.shape[:2]
-#     m = img.copy()
-#     cv2.rectangle(m, (0, int(h*0.80)), (int(w*0.30), h), (0,0,0), -1)
-#     return m
-
 def detect_regions_in_template(room):
     tpl_img = template_images.get(room)
     if tpl_img is None:
@@ -108,11 +104,6 @@ def process_room():
     if not room or tpl_img is None:
         return None, [], None
 
-    # mask dynamic UI
-    # img_m = mask_dynamic(img)
-    # tpl_m = mask_dynamic(tpl_img)
-
-    # ensure the heatmap directory exists
     heat_dir = os.path.join(BASE_DIR, room, HEATMAP_SUBFOLDER)
     os.makedirs(heat_dir, exist_ok=True)
 
@@ -168,163 +159,396 @@ def classify_heatmap(room: str, heatmap_path: str, anomaly_type: str):
 # UNDER WORK IN PROGRESS
 
 
-# def get_anomaly_coordinates(anomalies):
-#     best_coords = None
-#     highest_density = 0
-#     best_image_name = None
+# def convert_to_black_white_fullsize(heatmap_path, box=None):
+#     """
+#     Returns a binary image (255 = changed, 0 = unchanged).
+#     If box is provided, crops to that region before processing.
+#     Detects red/orange/yellow heatmap pixels and uses a 'not-blue' fallback.
+#     """
+#     img = cv2.imread(heatmap_path)
+#     if img is None:
+#         print(f"[ERROR] Unable to read heatmap: {heatmap_path}")
+#         return None
 
-#     bw_folder = os.path.join(os.getcwd(), "bw_heatmaps")
-#     os.makedirs(bw_folder, exist_ok=True)
+#     # Crop if box is provided
+#     if box:
+#         x1, y1, x2, y2 = map(int, box)
+#         img = img[y1:y2, x1:x2]
+#         if img.size == 0:
+#             print(f"[ERROR] Empty crop for {heatmap_path}")
+#             return None
 
-#     for anomaly in anomalies:
-#         heatmap_path = anomaly.get('heatmap_path')
-#         box = anomaly.get('box')
+#     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+#     # --- 1) Red ranges ---
+#     red1_lo = np.array([0,   50, 40],  dtype=np.uint8)
+#     red1_hi = np.array([10, 255, 255], dtype=np.uint8)
+#     red2_lo = np.array([160, 50, 40],  dtype=np.uint8)
+#     red2_hi = np.array([180,255, 255], dtype=np.uint8)
+#     mask_red = cv2.inRange(hsv, red1_lo, red1_hi) | cv2.inRange(hsv, red2_lo, red2_hi)
+
+#     # --- 2) Orange / Yellow ---
+#     warm_lo = np.array([10,  40, 40],  dtype=np.uint8)
+#     warm_hi = np.array([40, 255, 255], dtype=np.uint8)
+#     mask_warm = cv2.inRange(hsv, warm_lo, warm_hi)
+
+#     # --- 3) Not-blue fallback ---
+#     sat = hsv[:, :, 1]
+#     val = hsv[:, :, 2]
+#     not_blue = ((hsv[:, :, 0] < 85) | (hsv[:, :, 0] > 135)) & (sat >= 40) & (val >= 40)
+#     mask_not_blue = np.uint8(not_blue) * 255
+
+#     # Combine
+#     mask = cv2.bitwise_or(mask_red, mask_warm)
+#     mask = cv2.bitwise_or(mask, mask_not_blue)
+
+#     # Cleanup
+#     mask = cv2.medianBlur(mask, 3)
+#     kernel = np.ones((3,3), np.uint8)
+#     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+#     return mask
+# def calculate_density_and_centroid(binary_full: np.ndarray, box=None):
+#     """
+#     Computes density and centroid **in full-image coordinates**.
+#     If `box` is given, only pixels inside that box are considered.
+#     Returns (density, (cx, cy)) where centroid is (x, y) in full image.
+#     """
+#     H, W = binary_full.shape[:2]
+
+#     if box is not None:
+#         x1, y1, x2, y2 = map(int, box)
+#         x1 = np.clip(x1, 0, W); x2 = np.clip(x2, 0, W)
+#         y1 = np.clip(y1, 0, H); y2 = np.clip(y2, 0, H)
+#         roi = binary_full[y1:y2, x1:x2]
+#         total_pixels = roi.size if roi.size > 0 else 1
+#         ys, xs = np.where(roi > 0)
+#         if len(xs) == 0:
+#             return 0.0, None
+#         cx = int(xs.mean()) + x1
+#         cy = int(ys.mean()) + y1
+#         density = len(xs) / total_pixels
+#         return density, (cx, cy)
+
+#     # whole image
+#     total_pixels = binary_full.size if binary_full.size > 0 else 1
+#     ys, xs = np.where(binary_full > 0)
+#     if len(xs) == 0:
+#         return 0.0, None
+#     cx = int(xs.mean())
+#     cy = int(ys.mean())
+#     density = len(xs) / total_pixels
+#     return density, (cx, cy)
+
+
+# def get_anomaly_coordinates(anomalies, save_folder="bw_heatmaps_full"):
+#     """
+#     Chooses the anomaly (heatmap+box) with the highest red/orange density.
+#     - Saves a FULL-SIZE black/white mask (same resolution as heatmap), with a red dot at the centroid.
+#     - Returns best (cx, cy) in full-image coordinates, or None.
+#     """
+#     os.makedirs(save_folder, exist_ok=True)
+
+#     best_density = -1.0
+#     best_coords  = None
+#     best_name    = None
+
+#     for a in anomalies:
+#         heatmap_path = a.get('heatmap_path') or a.get('heatmap')
+#         box          = a.get('box')
 
 #         if not heatmap_path or not os.path.exists(heatmap_path):
 #             print(f"[ERROR] Heatmap path invalid: {heatmap_path}")
 #             continue
 
-#         x1, y1, x2, y2 = map(int, box)
-
-#         heatmap = cv2.imread(heatmap_path)
-#         if heatmap is None:
-#             print(f"[ERROR] Failed to read heatmap: {heatmap_path}")
+#         binary_full = convert_to_black_white_fullsize(heatmap_path, box)
+#         if binary_full is None:
 #             continue
 
-#         cropped = heatmap[y1:y2, x1:x2]
-#         if cropped.size == 0:
-#             print(f"[ERROR] Empty crop from: {heatmap_path}")
-#             continue
+#         density, centroid = calculate_density_and_centroid(binary_full, box)
+#         H, W = binary_full.shape[:2]
+#         print(f"[DEBUG] {os.path.basename(heatmap_path)} | density={density:.4f} | centroid={centroid} | size=({W}x{H})")
 
-#         gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-#         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+#         # Save full-size BW with centroid
+#         vis = cv2.cvtColor(binary_full, cv2.COLOR_GRAY2BGR)
+#         if centroid is not None:
+#             cv2.circle(vis, centroid, 6, (0, 0, 255), -1)
+#         out_path = os.path.join(save_folder, os.path.basename(heatmap_path))
+#         cv2.imwrite(out_path, vis)
 
-#         # Otsu thresholding for better binary segmentation
-#         _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+#         if density > best_density and centroid is not None:
+#             best_density = density
+#             best_coords  = centroid
+#             best_name    = os.path.basename(heatmap_path)
 
-#         bright_pixels = cv2.countNonZero(binary)
-#         total_pixels = binary.size
-#         density = bright_pixels / total_pixels
-
-#         print(f"[DEBUG] Processing anomaly with heatmap: {heatmap_path}")
-#         print(f"[DEBUG] Density: {density:.4f}, Bright pixels: {bright_pixels}, Total: {total_pixels}")
-
-#         # Find contours to calculate centroid
-#         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-#         if not contours:
-#             continue
-
-#         # Merge all contours to find total centroid
-#         all_points = np.vstack(contours)
-#         M = cv2.moments(all_points)
-#         if M["m00"] != 0:
-#             cx = int(M["m10"] / M["m00"]) + x1
-#             cy = int(M["m01"] / M["m00"]) + y1
-#         else:
-#             cx, cy = x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2  # Fallback to center
-
-#         # Update best
-#         if density > highest_density:
-#             highest_density = density
-#             best_coords = (cx, cy)
-#             best_image_name = os.path.basename(heatmap_path)
-
-#         # Draw centroid on black-and-white image and save
-#         color_output = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-#         cv2.circle(color_output, (cx - x1, cy - y1), 5, (0, 0, 255), -1)
-#         save_path = os.path.join(bw_folder, os.path.basename(heatmap_path))
-#         cv2.imwrite(save_path, color_output)
-
-#     if best_coords:
-#         print(f"[FINAL] Selected coordinates: {best_coords} from heatmap: {best_image_name}")
+#     if best_coords is not None:
+#         print(f"[FINAL] Selected {best_name} @ {best_coords} (density={best_density:.4f})")
 #     else:
-#         print("[DEBUG] No valid coordinates found.")
+#         print("[FINAL] No valid coordinates found.")
 
 #     return best_coords
+def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debug_name=None):
+    """
+    Returns (bw_mask, used_bgr, offset_xy)
+      - bw_mask: 255 = change, 0 = no change
+      - used_bgr: the BGR image we actually analyzed (crop or full)
+      - offset_xy: (x_off, y_off) to map local centroid to screen coords
+    """
+    img_full = cv2.imread(heatmap_path)
+    if img_full is None:
+        print(f"[ERROR] Unable to read heatmap: {heatmap_path}")
+        return None, None, (0, 0)
 
+    Hf, Wf = img_full.shape[:2]
+    use_full = True
+    x_off = y_off = 0
 
-def convert_to_black_white(heatmap_path, box, save_dir="bw_heatmaps"):
-    import cv2, numpy as np, os
+    # Try to crop if a box was provided
+    if box is not None and len(box) == 4:
+        x1, y1, x2, y2 = map(int, box)
+        # Clamp box to current image size (heatmap might be already-cropped)
+        ix1 = max(0, min(Wf, x1))
+        iy1 = max(0, min(Hf, y1))
+        ix2 = max(0, min(Wf, x2))
+        iy2 = max(0, min(Hf, y2))
 
-    os.makedirs(save_dir, exist_ok=True)
-    x1, y1, x2, y2 = map(int, box)
-
-    heatmap = cv2.imread(heatmap_path)
-    if heatmap is None:
-        print(f"[ERROR] Failed to read heatmap: {heatmap_path}")
-        return None, 0, None
-
-    cropped = heatmap[y1:y2, x1:x2]
-    if cropped.size == 0:
-        print(f"[ERROR] Empty crop from: {heatmap_path}")
-        return None, 0, None
-
-    # Convert to HSV and mask only red/orange pixels
-    hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
-    # Orange to Red - expanded hue and lower saturation/value thresholds
-    lower_red1 = np.array([0, 70, 50])
-    upper_red1 = np.array([15, 255, 255])
-
-    lower_red2 = np.array([160, 70, 50])
-    upper_red2 = np.array([180, 255, 255])
-
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    red_mask = cv2.bitwise_or(mask1, mask2)
-
-    binary = red_mask  # Already a binary mask
-    bright_pixels = cv2.countNonZero(binary)
-    total_pixels = binary.size
-    density = bright_pixels / total_pixels
-
-    # Get contours and centroid
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None, density, None
-
-    all_points = np.vstack(contours)
-    M = cv2.moments(all_points)
-    if M["m00"] != 0:
-        cx = int(M["m10"] / M["m00"]) + x1
-        cy = int(M["m01"] / M["m00"]) + y1
+        # If the clamped box has area, use it; otherwise fall back to full heatmap
+        if ix2 > ix1 and iy2 > iy1:
+            cropped = img_full[iy1:iy2, ix1:ix2]
+            if cropped.size > 0:
+                use_full = False
+                used = cropped
+                x_off, y_off = x1, y1  # map local centroid back to screen coords
+            else:
+                print(f"[WARN] Crop empty after clamp for {os.path.basename(heatmap_path)}; using full heatmap")
+                used = img_full
+                x_off, y_off = x1, y1  # heatmap itself is already a crop; still offset
+        else:
+            print(f"[WARN] Box collapses after clamp ({box}) on {os.path.basename(heatmap_path)}; using full heatmap")
+            used = img_full
+            x_off, y_off = x1, y1
     else:
-        cx, cy = x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2
+        used = img_full
 
-    # Save output with red dot on centroid
-    output_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-    cv2.circle(output_img, (cx - x1, cy - y1), 5, (0, 0, 255), -1)
-    save_path = os.path.join(save_dir, os.path.basename(heatmap_path))
-    cv2.imwrite(save_path, output_img)
+    # Build BW mask (broad warm hue capture)
+    hsv = cv2.cvtColor(used, cv2.COLOR_BGR2HSV)
 
-    return (cx, cy), density, save_path
+    mask_red  = cv2.inRange(hsv, (0,   40,  40), (10,  255, 255)) | \
+                cv2.inRange(hsv, (160, 40,  40), (180, 255, 255))
+    mask_warm = cv2.inRange(hsv, (10,  30,  30), (40,  255, 255))
+
+    b, g, r = cv2.split(used)
+    mask_r = (r.astype(np.int16) - np.maximum(g, b).astype(np.int16)) > 20
+    mask_y = (r > 150) & (g > 130) & (b < 170)
+    mask_chan = (mask_r | mask_y).astype(np.uint8) * 255
+
+    # Not-blue fallback (kept conservative)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    not_blue = ((h < 85) | (h > 135)) & (s >= 40) & (v >= 45)
+    mask_not_blue = not_blue.astype(np.uint8) * 255
+
+    bw = cv2.bitwise_or(mask_red | mask_warm, mask_chan)
+    bw = cv2.bitwise_or(bw, mask_not_blue)
+
+    bw = cv2.medianBlur(bw, 3)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        name = debug_name or os.path.basename(heatmap_path)
+        cv2.imwrite(os.path.join(debug_dir, f"BW_{name}"), bw)
+
+    return bw, used, (x_off, y_off)
 
 
-def get_anomaly_coordinates(anomalies):
-    best_coords = None
-    highest_density = 0
-    best_image_name = None
+def _centroid_from_mask(bw: np.ndarray, *, try_merge=True):
+    """
+    Returns (cx, cy, density) in local (mask) coordinates.
+    - try_merge: if True, dilate & retry once when no valid component exists.
+    density = largest_component_area / mask_area (or fraction of all white pixels in fallback)
+    """
+    H, W = bw.shape[:2]
+    area_img = H * W
 
-    for anomaly in anomalies:
-        heatmap_path = anomaly.get('heatmap_path')
-        box = anomaly.get('box')
+    def largest_component_centroid(mask):
+        num, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if num <= 1:
+            return None
+        # min-area threshold: small but non-zero
+        min_area = max(20, int(0.00015 * area_img))
+        best_lbl, best_area = None, -1
+        for lbl in range(1, num):
+            a = stats[lbl, cv2.CC_STAT_AREA]
+            if a >= min_area and a > best_area:
+                best_lbl, best_area = lbl, a
+        if best_lbl is None:
+            return None
+        cx, cy = map(int, np.round(cents[best_lbl]))
+        density = best_area / float(area_img)
+        return cx, cy, density
+
+    # 1) try straight components
+    out = largest_component_centroid(bw)
+    if out:
+        return out
+
+    # 2) optional merge pass (to connect speckles)
+    if try_merge:
+        merged = cv2.dilate(bw, np.ones((5, 5), np.uint8), iterations=2)
+        out = largest_component_centroid(merged)
+        if out:
+            return out
+
+    # 3) ultimate fallback: centroid of all white pixels
+    ys, xs = np.where(bw > 0)
+    if len(xs):
+        cx = int(np.mean(xs))
+        cy = int(np.mean(ys))
+        density = len(xs) / float(area_img)  # fraction white
+        return cx, cy, density
+
+    return None
+def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
+    """
+    Pick the anomaly whose mask has the highest bright‐pixel density.
+    Uses _centroid_from_mask(...) to find a robust centroid (with merge + fallback).
+    Returns (screen_x, screen_y), and writes ANALYZE_* for every candidate
+    and FINAL_* for the winner.
+    """
+    os.makedirs(debug_dir, exist_ok=True)
+
+    best = {"density": 0.0, "coords": None, "heatmap": None, "box": None}
+
+    for a in anomalies:
+        heatmap_path = a.get("heatmap_path") or a.get("heatmap")
+        box = a.get("box")
 
         if not heatmap_path or not os.path.exists(heatmap_path):
-            print(f"[ERROR] Heatmap path invalid: {heatmap_path}")
+            print(f"[ERROR] Invalid or missing heatmap path: {heatmap_path}")
             continue
 
-        coords, density, saved_path = convert_to_black_white(heatmap_path, box)
+        print(f"[DEBUG] Processing: {heatmap_path}")
 
-        print(f"[DEBUG] Processing: {os.path.basename(heatmap_path)}")
-        print(f"[DEBUG] Density: {density:.4f}, Centroid: {coords}, Saved: {saved_path}")
+        # Build a full-size binary mask aligned to screen coordinates.
+        bw, used_bgr, (x_off, y_off) = convert_to_black_white_fullsize(
+            heatmap_path,
+            box=box,
+            debug_dir=debug_dir,
+            debug_name=os.path.basename(heatmap_path)
+        )
+        if bw is None or used_bgr is None:
+            continue
 
-        if coords and density > highest_density:
-            highest_density = density
-            best_coords = coords
-            best_image_name = os.path.basename(heatmap_path)
+        # Robust centroid from mask (largest component, then merge, then global fallback).
+        res = _centroid_from_mask(bw, try_merge=True)
+        if not res:
+            print("[DEBUG] No centroid found in this mask.")
+            continue
 
-    if best_coords:
-        print(f"[FINAL] Selected coordinates: {best_coords} from heatmap: {best_image_name}")
-    else:
-        print("[DEBUG] No valid coordinates found.")
+        cx_local, cy_local, density = res
+        cx_screen, cy_screen = cx_local + x_off, cy_local + y_off
 
-    return best_coords
+        # Save candidate visualization
+        comp_vis = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
+        cv2.circle(comp_vis, (cx_local, cy_local), 6, (0, 0, 255), -1)
+        side = cv2.hconcat([used_bgr, comp_vis])
+        cv2.imwrite(os.path.join(debug_dir, f"ANALYZE_{os.path.basename(heatmap_path)}"), side)
+
+        # Keep the best by density
+        if density > best["density"]:
+            best.update({
+                "density": density,
+                "coords": (cx_screen, cy_screen),
+                "heatmap": heatmap_path,
+                "box": box
+            })
+
+    if best["coords"] and best["heatmap"]:
+        # Final visualization on the original heatmap image
+        full = cv2.imread(best["heatmap"])
+        if full is not None:
+            vis = full.copy()
+            if best["box"] and len(best["box"]) == 4:
+                x1, y1, x2, y2 = map(int, best["box"])
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.circle(vis, best["coords"], 8, (0, 0, 255), -1)
+            cv2.imwrite(os.path.join(debug_dir, f"FINAL_{os.path.basename(best['heatmap'])}"), vis)
+
+        print(f"[RESULT] Selected {os.path.basename(best['heatmap'])}  density={best['density']:.4f}  coords={best['coords']}")
+        return best["coords"]
+
+    print("[DEBUG] No valid coordinates found.")
+    return None
+
+
+def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, logger=None):
+    """
+    Moves the cursor to given anomaly coordinates, performs a long click,
+    and optionally tries to move to the top of the dropdown.
+
+    Args:
+        coords (tuple): (x, y) screen coordinates.
+        hold_seconds (float): Time to hold mouse button down.
+        dropdown (bool): If True, try to move cursor to top of dropdown after click.
+        logger (callable): Optional logger function.
+    """
+    if not coords:
+        if logger:
+            logger("No coordinates provided to move_cursor_to_anomaly.")
+        return False
+
+    x, y = coords
+    if logger:
+        logger(f"Moving mouse to anomaly at ({x}, {y})")
+
+    # Move to anomaly location
+    pyautogui.moveTo(x, y, duration=0.2)
+
+    # Long press
+    pyautogui.mouseDown()
+    time.sleep(hold_seconds)
+    pyautogui.mouseUp()
+
+    if logger:
+        logger(f"Mouse held for {hold_seconds} seconds, released.")
+
+    # Optional dropdown handling
+    if dropdown:
+        time.sleep(0.15)  # allow dropdown to render
+        moved = move_cursor_to_dropdown_top()
+        if moved and logger:
+            logger("Moved to top of dropdown.")
+        elif logger:
+            logger("Dropdown top not found.")
+
+    return True
+
+
+def move_cursor_to_dropdown_top():
+    """
+    Attempts to detect the dropdown above the current cursor and move to its top.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        x, y = pyautogui.position()
+        left, top, right, bottom = x - 220, y - 420, x + 220, y + 60
+        screen = ImageGrab.grab(bbox=(left, top, right, bottom))
+        img = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return False
+
+        largest = max(contours, key=cv2.contourArea)
+        x_c, y_c, w, h = cv2.boundingRect(largest)
+
+        top_x_screen = left + x_c + (w // 2)
+        top_y_screen = top + y_c + 5
+
+        pyautogui.moveTo(top_x_screen, top_y_screen, duration=0.15)
+        return True
+    except Exception:
+        return False
