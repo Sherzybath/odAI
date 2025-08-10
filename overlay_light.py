@@ -189,6 +189,9 @@ class OverlayLight(QtWidgets.QWidget):
    
 
     def handle_detection(self, room, anomalies, heat_path):
+    # ensure variable is defined to avoid "referenced before assignment" error
+        heatmap_path = heat_path if heat_path else None
+
         if not room:
             self.appendLog("Room detection failed.")
             return
@@ -196,17 +199,25 @@ class OverlayLight(QtWidgets.QWidget):
         self.appendLog(f"Room: {room} – Detected {len(anomalies)} anomaly/anomalies.")
         if not anomalies:
             return
-
         self.stop_automation()
+
         self.notify_anomaly(f"Anomaly detected in {room}!")
 
-        coords = backend.get_anomaly_coordinates(anomalies)
+        try:
+            coords = backend.get_anomaly_coordinates(anomalies)
+        except Exception as e:
+            self.appendLog(f"Error while selecting anomaly coordinates: {e}")
+            return
+
         if not coords:
             self.appendLog("No anomaly coordinates found.")
             return
 
-        # Call backend to do the cursor movement + click + dropdown
-        move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
+        # do the move+hold and dropdown handling in backend helper
+        try:
+            backend.move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
+        except Exception as e:
+            self.appendLog(f"Error moving cursor to anomaly: {e}")
             
         
 

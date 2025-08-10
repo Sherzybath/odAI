@@ -10,6 +10,7 @@ import shutil
 import pyautogui
 from PIL import ImageGrab
 import cv2
+import tempfile
 # ───── CONFIG ──────────────────────────────────────────────────────
 ROOMS                   = ["Yard","Entryway","Living", "Kitchen", "Bedroom", "Bathroom"  ]
 BASE_DIR                = os.path.join(os.path.dirname(__file__), "LogCabin")
@@ -20,6 +21,16 @@ PIXEL_COUNT_THRESHOLD = 400
 CLASSIFICATION_MAP = os.path.join(BASE_DIR, "classification_map.json")
 CLASSIFICATION_DIR = os.path.join(BASE_DIR, "classifications")
 # ────────────────────────────────────────────────────────────────────
+
+DEBUG_PERSIST = True  
+
+def set_debug_persistence(enabled: bool):
+    """Turn keeping debug artifacts (heatmaps & BW) on/off globally."""
+    global DEBUG_PERSIST
+    DEBUG_PERSIST = bool(enabled)
+
+def is_debug_persistence_enabled() -> bool:
+    return DEBUG_PERSIST
 
 # Initialize OCR reader
 reader = easyocr.Reader(['en'], gpu=False)
@@ -480,75 +491,230 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
     print("[DEBUG] No valid coordinates found.")
     return None
 
+# UNDER WORK
+# UNDER WORK
+# UNDER WORK
+# UNDER WORK
+# UNDER WORK
+# UNDER WORK
+# --- backend.py additions/updates ---
 
-def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, logger=None):
+pyautogui.FAILSAFE = False
+
+import numpy as np
+import cv2
+from PIL import ImageGrab
+import pyautogui
+
+def move_cursor_to_dropdown_top_any_side(logger=None):
     """
-    Moves the cursor to given anomaly coordinates, performs a long click,
-    and optionally tries to move to the top of the dropdown.
-
-    Args:
-        coords (tuple): (x, y) screen coordinates.
-        hold_seconds (float): Time to hold mouse button down.
-        dropdown (bool): If True, try to move cursor to top of dropdown after click.
-        logger (callable): Optional logger function.
-    """
-    if not coords:
-        if logger:
-            logger("No coordinates provided to move_cursor_to_anomaly.")
-        return False
-
-    x, y = coords
-    if logger:
-        logger(f"Moving mouse to anomaly at ({x}, {y})")
-
-    # Move to anomaly location
-    pyautogui.moveTo(x, y, duration=0.2)
-
-    # Long press
-    pyautogui.mouseDown()
-    time.sleep(hold_seconds)
-    pyautogui.mouseUp()
-
-    if logger:
-        logger(f"Mouse held for {hold_seconds} seconds, released.")
-
-    # Optional dropdown handling
-    if dropdown:
-        time.sleep(0.15)  # allow dropdown to render
-        moved = move_cursor_to_dropdown_top()
-        if moved and logger:
-            logger("Moved to top of dropdown.")
-        elif logger:
-            logger("Dropdown top not found.")
-
-    return True
-
-
-def move_cursor_to_dropdown_top():
-    """
-    Attempts to detect the dropdown above the current cursor and move to its top.
-    Returns True if successful, False otherwise.
+    Detect the dropdown near the cursor (works whether it opens left or right),
+    then anchor to the first selectable row (just below 'SELECT ANOMALY').
+    Returns (ax, ay) screen coords on success, or None on failure.
     """
     try:
         x, y = pyautogui.position()
-        left, top, right, bottom = x - 220, y - 420, x + 220, y + 60
+        sw, sh = pyautogui.size()
+
+        # Wider/taller crop improves robustness when the menu opens left/right
+        left   = max(0, int(x - 300))
+        top    = max(0, int(y - 500))
+        right  = min(sw, int(x + 300))
+        bottom = min(sh, int(y + 120))
+        if right - left < 40 or bottom - top < 40:
+            return None
+
         screen = ImageGrab.grab(bbox=(left, top, right, bottom))
-        img = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
+        img    = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
+        gray   = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Segment the panel
+        _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
-            return False
+            return None
 
+        # Largest contour ≈ dropdown body
         largest = max(contours, key=cv2.contourArea)
         x_c, y_c, w, h = cv2.boundingRect(largest)
+        if w < 120 or h < 120:
+            return None
 
-        top_x_screen = left + x_c + (w // 2)
-        top_y_screen = top + y_c + 5
+        # Work inside the detected panel
+        roi_gray = gray[y_c:y_c+h, x_c:x_c+w]
 
-        pyautogui.moveTo(top_x_screen, top_y_screen, duration=0.15)
-        return True
-    except Exception:
+        # Horizontal edge projection to find header->list boundary
+        edges   = cv2.Canny(roi_gray, 40, 120)
+        row_sum = edges.sum(axis=1)
+
+        # Search for strongest horizontal edge in the upper half (header area)
+        start_y = int(h * 0.10)
+        end_y   = int(h * 0.50)
+        if end_y - start_y < 10:
+            start_y, end_y = 0, h
+
+        local_peak = int(np.argmax(row_sum[start_y:end_y])) + start_y
+        # Fallback if the peak is weak
+        if row_sum[max(local_peak,0)] < 0.3 * (row_sum.max() if row_sum.max() > 0 else 1):
+            local_peak = int(h * 0.12)
+
+        # Anchor a little below that boundary: center-x, first row center-line
+        anchor_x = left + x_c + (w // 2)
+        anchor_y = top  + y_c + local_peak + 8  # nudge inside the first row
+        anchor_y -= 48
+        pyautogui.moveTo(anchor_x, anchor_y, duration=0.12)
+        if logger:
+            logger(f"Dropdown anchor set at ({anchor_x},{anchor_y}) [peak y={local_peak}]")
+        return (anchor_x, anchor_y)
+    except Exception as e:
+        if logger:
+            logger(f"[dropdown anchor] {e}")
+        return None
+# Mapping of anomaly types to their index in dropdown
+
+ANOMALY_POSITIONS = {
+    "Dead Body": 1,
+    "Door Anomaly": 2,
+    "Extra Object": 3,
+    "Image Anomaly": 4,
+    "Intruder": 5,
+    "Missing Object": 6,
+    "Object Manipulation": 7,
+    "Object Movement": 8,
+    "Object Replacement": 9,
+    "Other": 10,
+}
+
+def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type="Object Replacement", logger=None):
+    if not coords:
+        if logger: logger("No coordinates provided to move_cursor_to_anomaly.")
         return False
+
+    x, y = coords
+    if logger: logger(f"Moving mouse to anomaly at ({x}, {y})")
+    pyautogui.moveTo(x, y, duration=0.2)
+
+    pyautogui.mouseDown()
+    time.sleep(hold_seconds)
+    pyautogui.mouseUp()
+    if logger: logger(f"Mouse held for {hold_seconds} seconds, released.")
+
+    if dropdown:
+        time.sleep(0.15)  # let menu render
+        anchor = move_cursor_to_dropdown_top_any_side(logger=logger)
+        if anchor:
+            if anomaly_type:
+                idx = ANOMALY_POSITIONS.get(anomaly_type)
+                if idx is not None:
+                    ax, ay = anchor
+                    pyautogui.moveTo(ax, ay + idx * 60, duration=0.12)
+                    if logger: logger(f"Moved to '{anomaly_type}' (index {idx}, +{idx*50}px).")
+                else:
+                    if logger: logger(f"Unknown anomaly type: {anomaly_type}")
+            else:
+                if logger: logger("No anomaly type provided; staying at top.")
+        else:
+            if logger: logger("Failed to anchor dropdown; leaving cursor in place.")
+    return True
+
+# def move_cursor_to_dropdown_type(target_type, step_px=45, logger=None):
+#     """
+#     Uses the cached/selectable dropdown anchor (top-center of 'Select anomaly')
+#     as the starting point. Then moves down by (index+1) * step_px, where index is the
+#     0-based index of target_type in ANOMALY_TYPES_ORDER.
+
+#     Returns True if successful, False otherwise.
+#     """
+#     def log(msg):
+#         if callable(logger):
+#             logger(msg)
+
+#     # 1) Ensure anchor exists (find/cached)
+#     anchor = _get_or_find_dropdown_anchor(logger=logger)
+#     if anchor is None:
+#         log("Dropdown anchor not found.") if logger else None
+#         return False
+
+#     # 2) Figure out how many steps down
+#     try:
+#         idx = ANOMALY_TYPES_ORDER.index(target_type)
+#     except ValueError:
+#         log(f"Unknown target_type: {target_type}") if logger else None
+#         return False
+
+#     # Per your rule: start at Select Anomaly (anchor), then move 50px per type
+#     # First type => 1 * 50, second => 2 * 50, etc.
+#     steps_down = (idx + 1) * step_px
+
+#     base_x, base_y = anchor
+#     dest_x = base_x
+#     dest_y = base_y + steps_down
+
+#     # Clamp to screen bounds to be safe
+#     sw, sh = pyautogui.size()
+#     dest_x = max(0, min(sw - 1, dest_x))
+#     dest_y = max(0, min(sh - 1, dest_y))
+
+#     pyautogui.moveTo(dest_x, dest_y, duration=0.15)
+#     log(f"Moved to '{target_type}' at ({dest_x}, {dest_y})") if logger else None
+#     return True
+
+
+# def _get_or_find_dropdown_anchor(logger=None):
+#     """
+#     Returns cached anchor if available. Otherwise tries to detect the dropdown panel
+#     around the cursor, and caches the top-center as the anchor (the 'Select anomaly' row).
+#     """
+#     def log(msg):
+#         if callable(logger):
+#             logger(msg)
+
+#     global _dropdown_anchor
+#     if _dropdown_anchor is not None:
+#         return _dropdown_anchor
+
+#     # Try to detect the dropdown panel near the cursor (like your previous helper)
+#     try:
+#         x, y = pyautogui.position()
+#         sw, sh = pyautogui.size()
+
+#         # Region around/above cursor
+#         left   = max(0, int(x - 240))
+#         top    = max(0, int(y - 460))
+#         right  = min(sw, int(x + 240))
+#         bottom = min(sh, int(y +  80))
+#         if right - left < 40 or bottom - top < 40:
+#             return None
+
+#         shot = ImageGrab.grab(bbox=(left, top, right, bottom))
+#         img  = cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2BGR)
+
+#         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+#         _, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+#         cnts, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#         if not cnts:
+#             return None
+
+#         largest = max(cnts, key=cv2.contourArea)
+#         x_c, y_c, w, h = cv2.boundingRect(largest)
+#         if w < 60 or h < 60:
+#             return None
+
+#         # Top-center of the dropdown, tiny nudge down (inside the first row = "Select anomaly")
+#         anchor_x = left + x_c + (w // 2)
+#         anchor_y = top  + y_c + 6
+
+#         _dropdown_anchor = (anchor_x, anchor_y)
+#         log(f"Dropdown anchor cached at: {_dropdown_anchor}") if logger else None
+#         return _dropdown_anchor
+
+#     except Exception as e:
+#         log(f"[anchor] {e}") if logger else None
+#         return None
+
+
+# def clear_dropdown_anchor():
+#     """If you need to force re-detection on the next dropdown, call this."""
+#     global _dropdown_anchor
+#     _dropdown_anchor = None
