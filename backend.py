@@ -20,9 +20,25 @@ BINARY_THRESH           = 20
 PIXEL_COUNT_THRESHOLD = 400
 CLASSIFICATION_MAP = os.path.join(BASE_DIR, "classification_map.json")
 CLASSIFICATION_DIR = os.path.join(BASE_DIR, "classifications")
-# ────────────────────────────────────────────────────────────────────
-
 DEBUG_PERSIST = True  
+
+pyautogui.FAILSAFE = False
+
+# ────────────────────────────────────────────────────────────────────
+ANOMALY_POSITIONS = {
+    "Dead Body": 1,
+    "Door Anomaly": 2,
+    "Extra Object": 3,
+    "Image Anomaly": 4,
+    "Intruder": 5,
+    "Missing Object": 6,
+    "Object Manipulation": 7,
+    "Object Movement": 8,
+    "Object Replacement": 9,
+    "Other": 10,
+}
+
+
 
 def set_debug_persistence(enabled: bool):
     """Turn keeping debug artifacts (heatmaps & BW) on/off globally."""
@@ -101,13 +117,16 @@ baseline_regions = {
     for room in ROOMS
 }
 
-def process_room():
+def process_room(persist: bool | None = None):
     """
-    Capture screen, detect room, and for each baseline region:
-    diff that crop, then flag if pixel_count > PIXEL_COUNT_THRESHOLD.
-    Heatmaps are saved under LogCabin/<Room>/heatmaps/.
-    Returns (room, anomalies, None).
+    Capture screen, detect room, diff regions, save heatmaps.
+    If persist=False, saves to a temp dir and marks artifacts as transient
+    so they can be auto-removed after use.
+    Returns (room, anomalies, last_heatmap_path).
     """
+    if persist is None:
+        persist = DEBUG_PERSIST
+
     time.sleep(0.2)
     img = capture_screen()
     room = detect_room_name(img)
@@ -115,11 +134,18 @@ def process_room():
     if not room or tpl_img is None:
         return None, [], None
 
-    heat_dir = os.path.join(BASE_DIR, room, HEATMAP_SUBFOLDER)
+    # Choose output dir
+    if persist:
+        heat_dir = os.path.join(BASE_DIR, room, HEATMAP_SUBFOLDER)
+    else:
+        # temp dir for ephemeral artifacts
+        heat_dir = tempfile.mkdtemp(prefix=f"{room}_heatmaps_tmp_", dir=os.path.join(BASE_DIR, room))
     os.makedirs(heat_dir, exist_ok=True)
 
     anomalies = []
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    last_heat_path = None
+
     for region in baseline_regions[room]:
         cls = region["class_name"]
         x1, y1, x2, y2 = map(int, region["box"])
@@ -134,19 +160,21 @@ def process_room():
         if pix_count > PIXEL_COUNT_THRESHOLD:
             heat = cv2.applyColorMap(binm, cv2.COLORMAP_JET)
             overlay = cv2.addWeighted(live_crop, 0.7, heat, 0.5, 0)
-            # save into the heatmaps subfolder
             fname = f"{room}_{cls}_{ts}_HEAT.png"
             heat_path = os.path.join(heat_dir, fname)
             cv2.imwrite(heat_path, overlay)
+            last_heat_path = heat_path
 
             anomalies.append({
                 "class_name": cls,
                 "box": region["box"],
                 "pixel_count": pix_count,
-                "heatmap_path": heat_path
+                "heatmap_path": heat_path,
+                "transient": not persist,   # <- mark for cleanup later
+                "transient_root": heat_dir if not persist else None
             })
 
-    return room, anomalies, heat_path
+    return room, anomalies, last_heat_path
 def save_classification_signature(signature: str, anomaly_type: str):
     classification_map[signature] = anomaly_type
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -168,142 +196,46 @@ def classify_heatmap(room: str, heatmap_path: str, anomaly_type: str):
 # UNDER WORK IN PROGRESS
 # UNDER WORK IN PROGRESS
 # UNDER WORK IN PROGRESS
+def _cleanup_transient_artifacts(anomalies):
+    """
+    Remove temporary heatmap folders/files produced by process_room(persist=False).
+    Safely ignores missing paths.
+    """
+    # Prefer removing the temp root folder when provided
+    transient_roots = set()
+    to_remove_files = []
+
+    for a in anomalies:
+        if a.get("transient_root"):
+            transient_roots.add(a["transient_root"])
+        elif a.get("transient") and a.get("heatmap_path"):
+            to_remove_files.append(a["heatmap_path"])
+
+    # Remove temp directories
+    for root in transient_roots:
+        try:
+            if os.path.isdir(root):
+                shutil.rmtree(root, ignore_errors=True)
+        except Exception as e:
+            print(f"[WARN] Failed to remove transient root '{root}': {e}")
+
+    # Remove stray files if any
+    for f in to_remove_files:
+        try:
+            if os.path.isfile(f):
+                os.remove(f)
+        except Exception as e:
+            print(f"[WARN] Failed to remove transient file '{f}': {e}")
 
 
-# def convert_to_black_white_fullsize(heatmap_path, box=None):
-#     """
-#     Returns a binary image (255 = changed, 0 = unchanged).
-#     If box is provided, crops to that region before processing.
-#     Detects red/orange/yellow heatmap pixels and uses a 'not-blue' fallback.
-#     """
-#     img = cv2.imread(heatmap_path)
-#     if img is None:
-#         print(f"[ERROR] Unable to read heatmap: {heatmap_path}")
-#         return None
-
-#     # Crop if box is provided
-#     if box:
-#         x1, y1, x2, y2 = map(int, box)
-#         img = img[y1:y2, x1:x2]
-#         if img.size == 0:
-#             print(f"[ERROR] Empty crop for {heatmap_path}")
-#             return None
-
-#     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-#     # --- 1) Red ranges ---
-#     red1_lo = np.array([0,   50, 40],  dtype=np.uint8)
-#     red1_hi = np.array([10, 255, 255], dtype=np.uint8)
-#     red2_lo = np.array([160, 50, 40],  dtype=np.uint8)
-#     red2_hi = np.array([180,255, 255], dtype=np.uint8)
-#     mask_red = cv2.inRange(hsv, red1_lo, red1_hi) | cv2.inRange(hsv, red2_lo, red2_hi)
-
-#     # --- 2) Orange / Yellow ---
-#     warm_lo = np.array([10,  40, 40],  dtype=np.uint8)
-#     warm_hi = np.array([40, 255, 255], dtype=np.uint8)
-#     mask_warm = cv2.inRange(hsv, warm_lo, warm_hi)
-
-#     # --- 3) Not-blue fallback ---
-#     sat = hsv[:, :, 1]
-#     val = hsv[:, :, 2]
-#     not_blue = ((hsv[:, :, 0] < 85) | (hsv[:, :, 0] > 135)) & (sat >= 40) & (val >= 40)
-#     mask_not_blue = np.uint8(not_blue) * 255
-
-#     # Combine
-#     mask = cv2.bitwise_or(mask_red, mask_warm)
-#     mask = cv2.bitwise_or(mask, mask_not_blue)
-
-#     # Cleanup
-#     mask = cv2.medianBlur(mask, 3)
-#     kernel = np.ones((3,3), np.uint8)
-#     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-#     return mask
-# def calculate_density_and_centroid(binary_full: np.ndarray, box=None):
-#     """
-#     Computes density and centroid **in full-image coordinates**.
-#     If `box` is given, only pixels inside that box are considered.
-#     Returns (density, (cx, cy)) where centroid is (x, y) in full image.
-#     """
-#     H, W = binary_full.shape[:2]
-
-#     if box is not None:
-#         x1, y1, x2, y2 = map(int, box)
-#         x1 = np.clip(x1, 0, W); x2 = np.clip(x2, 0, W)
-#         y1 = np.clip(y1, 0, H); y2 = np.clip(y2, 0, H)
-#         roi = binary_full[y1:y2, x1:x2]
-#         total_pixels = roi.size if roi.size > 0 else 1
-#         ys, xs = np.where(roi > 0)
-#         if len(xs) == 0:
-#             return 0.0, None
-#         cx = int(xs.mean()) + x1
-#         cy = int(ys.mean()) + y1
-#         density = len(xs) / total_pixels
-#         return density, (cx, cy)
-
-#     # whole image
-#     total_pixels = binary_full.size if binary_full.size > 0 else 1
-#     ys, xs = np.where(binary_full > 0)
-#     if len(xs) == 0:
-#         return 0.0, None
-#     cx = int(xs.mean())
-#     cy = int(ys.mean())
-#     density = len(xs) / total_pixels
-#     return density, (cx, cy)
-
-
-# def get_anomaly_coordinates(anomalies, save_folder="bw_heatmaps_full"):
-#     """
-#     Chooses the anomaly (heatmap+box) with the highest red/orange density.
-#     - Saves a FULL-SIZE black/white mask (same resolution as heatmap), with a red dot at the centroid.
-#     - Returns best (cx, cy) in full-image coordinates, or None.
-#     """
-#     os.makedirs(save_folder, exist_ok=True)
-
-#     best_density = -1.0
-#     best_coords  = None
-#     best_name    = None
-
-#     for a in anomalies:
-#         heatmap_path = a.get('heatmap_path') or a.get('heatmap')
-#         box          = a.get('box')
-
-#         if not heatmap_path or not os.path.exists(heatmap_path):
-#             print(f"[ERROR] Heatmap path invalid: {heatmap_path}")
-#             continue
-
-#         binary_full = convert_to_black_white_fullsize(heatmap_path, box)
-#         if binary_full is None:
-#             continue
-
-#         density, centroid = calculate_density_and_centroid(binary_full, box)
-#         H, W = binary_full.shape[:2]
-#         print(f"[DEBUG] {os.path.basename(heatmap_path)} | density={density:.4f} | centroid={centroid} | size=({W}x{H})")
-
-#         # Save full-size BW with centroid
-#         vis = cv2.cvtColor(binary_full, cv2.COLOR_GRAY2BGR)
-#         if centroid is not None:
-#             cv2.circle(vis, centroid, 6, (0, 0, 255), -1)
-#         out_path = os.path.join(save_folder, os.path.basename(heatmap_path))
-#         cv2.imwrite(out_path, vis)
-
-#         if density > best_density and centroid is not None:
-#             best_density = density
-#             best_coords  = centroid
-#             best_name    = os.path.basename(heatmap_path)
-
-#     if best_coords is not None:
-#         print(f"[FINAL] Selected {best_name} @ {best_coords} (density={best_density:.4f})")
-#     else:
-#         print("[FINAL] No valid coordinates found.")
-
-#     return best_coords
 def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debug_name=None):
     """
     Returns (bw_mask, used_bgr, offset_xy)
       - bw_mask: 255 = change, 0 = no change
       - used_bgr: the BGR image we actually analyzed (crop or full)
       - offset_xy: (x_off, y_off) to map local centroid to screen coords
+
+    NOTE: Debug image writes are gated by DEBUG_PERSIST.
     """
     img_full = cv2.imread(heatmap_path)
     if img_full is None:
@@ -311,29 +243,25 @@ def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debu
         return None, None, (0, 0)
 
     Hf, Wf = img_full.shape[:2]
-    use_full = True
     x_off = y_off = 0
 
     # Try to crop if a box was provided
     if box is not None and len(box) == 4:
         x1, y1, x2, y2 = map(int, box)
-        # Clamp box to current image size (heatmap might be already-cropped)
         ix1 = max(0, min(Wf, x1))
         iy1 = max(0, min(Hf, y1))
         ix2 = max(0, min(Wf, x2))
         iy2 = max(0, min(Hf, y2))
 
-        # If the clamped box has area, use it; otherwise fall back to full heatmap
         if ix2 > ix1 and iy2 > iy1:
             cropped = img_full[iy1:iy2, ix1:ix2]
             if cropped.size > 0:
-                use_full = False
                 used = cropped
-                x_off, y_off = x1, y1  # map local centroid back to screen coords
+                x_off, y_off = x1, y1  # local->screen
             else:
                 print(f"[WARN] Crop empty after clamp for {os.path.basename(heatmap_path)}; using full heatmap")
                 used = img_full
-                x_off, y_off = x1, y1  # heatmap itself is already a crop; still offset
+                x_off, y_off = x1, y1
         else:
             print(f"[WARN] Box collapses after clamp ({box}) on {os.path.basename(heatmap_path)}; using full heatmap")
             used = img_full
@@ -353,18 +281,17 @@ def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debu
     mask_y = (r > 150) & (g > 130) & (b < 170)
     mask_chan = (mask_r | mask_y).astype(np.uint8) * 255
 
-    # Not-blue fallback (kept conservative)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     not_blue = ((h < 85) | (h > 135)) & (s >= 40) & (v >= 45)
     mask_not_blue = not_blue.astype(np.uint8) * 255
 
     bw = cv2.bitwise_or(mask_red | mask_warm, mask_chan)
     bw = cv2.bitwise_or(bw, mask_not_blue)
-
     bw = cv2.medianBlur(bw, 3)
     bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
 
-    if debug_dir:
+    # Only write BW debug if persistence is enabled
+    if DEBUG_PERSIST and debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         name = debug_name or os.path.basename(heatmap_path)
         cv2.imwrite(os.path.join(debug_dir, f"BW_{name}"), bw)
@@ -419,14 +346,22 @@ def _centroid_from_mask(bw: np.ndarray, *, try_merge=True):
         return cx, cy, density
 
     return None
-def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
+def get_anomaly_coordinates(anomalies, debug_dir="debug_selected", persist: bool | None = None):
     """
     Pick the anomaly whose mask has the highest bright‐pixel density.
-    Uses _centroid_from_mask(...) to find a robust centroid (with merge + fallback).
-    Returns (screen_x, screen_y), and writes ANALYZE_* for every candidate
-    and FINAL_* for the winner.
+    Uses _centroid_from_mask(...) to find a robust centroid (merge + fallback).
+    Returns (screen_x, screen_y).
+
+    Debug images (ANALYZE_*/FINAL_*) are only written when persistence is enabled.
+    If persistence is disabled, transient heatmaps created by process_room() are deleted.
     """
-    os.makedirs(debug_dir, exist_ok=True)
+    if persist is None:
+        persist = DEBUG_PERSIST
+
+    # Only allocate a real debug dir when persisting
+    local_debug_dir = debug_dir if persist else None
+    if persist:
+        os.makedirs(local_debug_dir, exist_ok=True)
 
     best = {"density": 0.0, "coords": None, "heatmap": None, "box": None}
 
@@ -440,17 +375,15 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
 
         print(f"[DEBUG] Processing: {heatmap_path}")
 
-        # Build a full-size binary mask aligned to screen coordinates.
         bw, used_bgr, (x_off, y_off) = convert_to_black_white_fullsize(
             heatmap_path,
             box=box,
-            debug_dir=debug_dir,
+            debug_dir=local_debug_dir,
             debug_name=os.path.basename(heatmap_path)
         )
         if bw is None or used_bgr is None:
             continue
 
-        # Robust centroid from mask (largest component, then merge, then global fallback).
         res = _centroid_from_mask(bw, try_merge=True)
         if not res:
             print("[DEBUG] No centroid found in this mask.")
@@ -459,13 +392,13 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
         cx_local, cy_local, density = res
         cx_screen, cy_screen = cx_local + x_off, cy_local + y_off
 
-        # Save candidate visualization
-        comp_vis = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
-        cv2.circle(comp_vis, (cx_local, cy_local), 6, (0, 0, 255), -1)
-        side = cv2.hconcat([used_bgr, comp_vis])
-        cv2.imwrite(os.path.join(debug_dir, f"ANALYZE_{os.path.basename(heatmap_path)}"), side)
+        # Candidate visualization only if persisting
+        if persist and local_debug_dir:
+            comp_vis = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
+            cv2.circle(comp_vis, (cx_local, cy_local), 6, (0, 0, 255), -1)
+            side = cv2.hconcat([used_bgr, comp_vis])
+            cv2.imwrite(os.path.join(local_debug_dir, f"ANALYZE_{os.path.basename(heatmap_path)}"), side)
 
-        # Keep the best by density
         if density > best["density"]:
             best.update({
                 "density": density,
@@ -474,23 +407,30 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
                 "box": box
             })
 
+    # Final visualize + optional cleanup
     if best["coords"] and best["heatmap"]:
-        # Final visualization on the original heatmap image
-        full = cv2.imread(best["heatmap"])
-        if full is not None:
-            vis = full.copy()
-            if best["box"] and len(best["box"]) == 4:
-                x1, y1, x2, y2 = map(int, best["box"])
-                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 255), 2)
-            cv2.circle(vis, best["coords"], 8, (0, 0, 255), -1)
-            cv2.imwrite(os.path.join(debug_dir, f"FINAL_{os.path.basename(best['heatmap'])}"), vis)
+        if persist and local_debug_dir:
+            full = cv2.imread(best["heatmap"])
+            if full is not None:
+                vis = full.copy()
+                if best["box"] and len(best["box"]) == 4:
+                    x1, y1, x2, y2 = map(int, best["box"])
+                    cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                cv2.circle(vis, best["coords"], 8, (0, 0, 255), -1)
+                cv2.imwrite(os.path.join(local_debug_dir, f"FINAL_{os.path.basename(best['heatmap'])}"), vis)
 
         print(f"[RESULT] Selected {os.path.basename(best['heatmap'])}  density={best['density']:.4f}  coords={best['coords']}")
+
+        # If persistence is OFF, clean transient artifacts (temp dirs from process_room)
+        if not persist:
+            _cleanup_transient_artifacts(anomalies)
+
         return best["coords"]
 
     print("[DEBUG] No valid coordinates found.")
+    if not persist:
+        _cleanup_transient_artifacts(anomalies)
     return None
-
 # UNDER WORK
 # UNDER WORK
 # UNDER WORK
@@ -499,91 +439,149 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected"):
 # UNDER WORK
 # --- backend.py additions/updates ---
 
-pyautogui.FAILSAFE = False
-
-import numpy as np
-import cv2
-from PIL import ImageGrab
-import pyautogui
-
-def move_cursor_to_dropdown_top_any_side(logger=None):
+def move_cursor_to_dropdown_top_any_side(
+    logger=None,
+    delta_to_top: int = 290,         # pixels from "Intruder" row to top row
+    nudge_px: int = 12,              # small push inside the top row
+    search_pad_xy: tuple[int, int] = (380, 260),  # ROI half-width/height around cursor
+    upscale: float = 1.45,           # modest upscale for OCR speed/accuracy
+    delay_seconds: float = 0.0       # keep 0.0 in production; set 2.0 if you want the test behavior
+) -> tuple[int, int] | None:
     """
-    Detect the dropdown near the cursor (works whether it opens left or right),
-    then anchor to the first selectable row (just below 'SELECT ANOMALY').
-    Returns (ax, ay) screen coords on success, or None on failure.
+    Anchor to the top of the anomaly dropdown by locating the word 'Intruder'
+    near the cursor (EasyOCR), then jumping ~delta_to_top pixels above it.
+
+    Returns (ax, ay) absolute screen coords on success, or None on failure.
     """
     try:
-        x, y = pyautogui.position()
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)  # optional: mimic test script timing
+
+        # --- ROI around cursor ---
         sw, sh = pyautogui.size()
-
-        # Wider/taller crop improves robustness when the menu opens left/right
-        left   = max(0, int(x - 300))
-        top    = max(0, int(y - 500))
-        right  = min(sw, int(x + 300))
-        bottom = min(sh, int(y + 120))
+        cx, cy = pyautogui.position()
+        pad_x, pad_y = search_pad_xy
+        left   = max(0, cx - pad_x)
+        top    = max(0, cy - pad_y)
+        right  = min(sw, cx + pad_x)
+        bottom = min(sh, cy + pad_y)
         if right - left < 40 or bottom - top < 40:
+            if logger: logger("Anchor ROI too small.")
             return None
 
-        screen = ImageGrab.grab(bbox=(left, top, right, bottom))
-        img    = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
-        gray   = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Capture ROI
+        roi_rgb = np.array(ImageGrab.grab(bbox=(left, top, right, bottom)))
+        roi_gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY)
 
-        # Segment the panel
-        _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+        # --- OCR helpers (reuse backend.reader) ---
+        def _prep_fast(gray: np.ndarray):
+            norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+            blur = cv2.GaussianBlur(norm, (3, 3), 0)
+            _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            return norm, bw
+
+        def _is_intruder(txt: str) -> bool:
+            if not txt: return False
+            t = "".join(ch.lower() for ch in txt if ch.isalnum())
+            return "intrud" in t  # fuzzy substring
+
+        # Upscale once to help EasyOCR on UI fonts
+        if upscale and upscale > 1.0:
+            roi_gray_up = cv2.resize(roi_gray, None, fx=upscale, fy=upscale, interpolation=cv2.INTER_CUBIC)
+        else:
+            roi_gray_up = roi_gray
+
+        norm, bw = _prep_fast(roi_gray_up)
+        inv = 255 - bw
+
+        def _ocr_once(arr):
+            # Use your initialized reader for speed
+            return reader.readtext(
+                arr,
+                detail=1,
+                paragraph=False,
+                decoder="greedy",     # faster
+                contrast_ths=0.05,
+                adjust_contrast=0.7,
+                text_threshold=0.5,
+                low_text=0.2,
+            )
+
+        # Try normalized first, then quick inverted fallback
+        best = None  # (conf, cx_local, cy_local, bbox_points)
+        for variant in (norm, inv):
+            try:
+                results = _ocr_once(variant)
+            except Exception:
+                results = []
+            for bbox, text, conf in results:
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                if _is_intruder(text):
+                    xs = [int(p[0]) for p in bbox]
+                    ys = [int(p[1]) for p in bbox]
+                    cx_local = (min(xs) + max(xs)) // 2
+                    cy_local = (min(ys) + max(ys)) // 2
+                    if best is None or conf > best[0]:
+                        best = (conf, cx_local, cy_local, bbox)
+            if best is not None:
+                break  # found it; no need for further variants
+
+        if best is None:
+            if logger: logger("EasyOCR couldn't find 'Intruder' near cursor.")
             return None
 
-        # Largest contour ≈ dropdown body
-        largest = max(contours, key=cv2.contourArea)
-        x_c, y_c, w, h = cv2.boundingRect(largest)
-        if w < 120 or h < 120:
-            return None
+        conf, cx_local_up, cy_local_up, bbox_up = best
 
-        # Work inside the detected panel
-        roi_gray = gray[y_c:y_c+h, x_c:x_c+w]
+        # Convert back if we upscaled
+        inv_scale = 1.0 / (upscale if upscale else 1.0)
+        cx_local = int(cx_local_up * inv_scale)
+        cy_local = int(cy_local_up * inv_scale)
 
-        # Horizontal edge projection to find header->list boundary
-        edges   = cv2.Canny(roi_gray, 40, 120)
-        row_sum = edges.sum(axis=1)
+        # Absolute screen coords of detected word center
+        word_cx_screen = left + cx_local
+        word_cy_screen = top  + cy_local
 
-        # Search for strongest horizontal edge in the upper half (header area)
-        start_y = int(h * 0.10)
-        end_y   = int(h * 0.50)
-        if end_y - start_y < 10:
-            start_y, end_y = 0, h
+        # Compute top row anchor
+        anchor_x = int(np.clip(word_cx_screen, 0, sw - 1))
+        anchor_y = int(np.clip(word_cy_screen - delta_to_top + nudge_px, 0, sh - 1))
 
-        local_peak = int(np.argmax(row_sum[start_y:end_y])) + start_y
-        # Fallback if the peak is weak
-        if row_sum[max(local_peak,0)] < 0.3 * (row_sum.max() if row_sum.max() > 0 else 1):
-            local_peak = int(h * 0.12)
+        pyautogui.moveTo(anchor_x, anchor_y, duration=0.08)
 
-        # Anchor a little below that boundary: center-x, first row center-line
-        anchor_x = left + x_c + (w // 2)
-        anchor_y = top  + y_c + local_peak + 8  # nudge inside the first row
-        anchor_y -= 48
-        pyautogui.moveTo(anchor_x, anchor_y, duration=0.12)
         if logger:
-            logger(f"Dropdown anchor set at ({anchor_x},{anchor_y}) [peak y={local_peak}]")
+            logger(f"Anchor via 'Intruder' at conf={conf:.2f}; top≈({anchor_x},{anchor_y}) "
+                   f"using Δ={delta_to_top}, nudge={nudge_px}")
+
+        # --- Debug overlay (saved only if DEBUG_PERSIST) ---
+        if DEBUG_PERSIST:
+            try:
+                dbg = roi_rgb.copy()
+                # scale bbox back down if needed
+                pts = np.array([ (int(p[0]*inv_scale), int(p[1]*inv_scale)) for p in bbox_up ], dtype=np.int32)
+                # Draw word bbox (red) and center (green)
+                cv2.polylines(dbg, [pts], isClosed=True, color=(0, 0, 255), thickness=2)
+                cv2.circle(dbg, (cx_local, cy_local), 6, (0, 255, 0), -1)
+                # Draw computed top-row point (blue)
+                top_local_x = anchor_x - left
+                top_local_y = anchor_y - top
+                cv2.circle(dbg, (top_local_x, top_local_y), 6, (255, 0, 0), -1)
+
+                os.makedirs(os.path.join(BASE_DIR, "debug_dropdown"), exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                out_path = os.path.join(BASE_DIR, "debug_dropdown", f"intruder_anchor_{ts}.png")
+                cv2.imwrite(out_path, cv2.cvtColor(dbg, cv2.COLOR_RGB2BGR))
+                if logger: logger(f"[debug] saved overlay → {out_path}")
+            except Exception as e:
+                if logger: logger(f"[debug save] {e}")
+
         return (anchor_x, anchor_y)
+
     except Exception as e:
         if logger:
-            logger(f"[dropdown anchor] {e}")
+            logger(f"[dropdown anchor via 'Intruder'] {e}")
         return None
-# Mapping of anomaly types to their index in dropdown
 
-ANOMALY_POSITIONS = {
-    "Dead Body": 1,
-    "Door Anomaly": 2,
-    "Extra Object": 3,
-    "Image Anomaly": 4,
-    "Intruder": 5,
-    "Missing Object": 6,
-    "Object Manipulation": 7,
-    "Object Movement": 8,
-    "Object Replacement": 9,
-    "Other": 10,
-}
+
 
 def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type="Object Replacement", logger=None):
     if not coords:
@@ -617,104 +615,101 @@ def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type=
             if logger: logger("Failed to anchor dropdown; leaving cursor in place.")
     return True
 
-# def move_cursor_to_dropdown_type(target_type, step_px=45, logger=None):
-#     """
-#     Uses the cached/selectable dropdown anchor (top-center of 'Select anomaly')
-#     as the starting point. Then moves down by (index+1) * step_px, where index is the
-#     0-based index of target_type in ANOMALY_TYPES_ORDER.
 
-#     Returns True if successful, False otherwise.
-#     """
-#     def log(msg):
-#         if callable(logger):
-#             logger(msg)
+def read_center_status(logger=None, roi=None, debug=False):
+    """
+    Read the status text shown around the center of the screen.
+    Returns the raw string (e.g., 'Anomaly detected in the center of the screen' or
+    'No anomalies found in the center of the screen'). The selector will interpret it.
 
-#     # 1) Ensure anchor exists (find/cached)
-#     anchor = _get_or_find_dropdown_anchor(logger=logger)
-#     if anchor is None:
-#         log("Dropdown anchor not found.") if logger else None
-#         return False
+    Args:
+        logger: optional callable(str) for logs
+        roi: optional (x, y, w, h) absolute screen coords to override the auto-ROI
+        debug: if True and DEBUG_PERSIST, saves the cropped ROI for inspection
 
-#     # 2) Figure out how many steps down
-#     try:
-#         idx = ANOMALY_TYPES_ORDER.index(target_type)
-#     except ValueError:
-#         log(f"Unknown target_type: {target_type}") if logger else None
-#         return False
+    Notes:
+        - Uses easyocr 'reader' already initialized in backend.
+        - You can fine-tune the auto-ROI fractions below if your HUD differs.
+    """
+    def log(msg):
+        if callable(logger):
+            logger(msg)
+        else:
+            print(msg)
 
-#     # Per your rule: start at Select Anomaly (anchor), then move 50px per type
-#     # First type => 1 * 50, second => 2 * 50, etc.
-#     steps_down = (idx + 1) * step_px
+    # 1) Grab full screen
+    frame = capture_screen()
+    if frame is None or frame.size == 0:
+        log("[read_center_status] capture_screen() returned empty frame.")
+        return ""
 
-#     base_x, base_y = anchor
-#     dest_x = base_x
-#     dest_y = base_y + steps_down
+    H, W = frame.shape[:2]
 
-#     # Clamp to screen bounds to be safe
-#     sw, sh = pyautogui.size()
-#     dest_x = max(0, min(sw - 1, dest_x))
-#     dest_y = max(0, min(sh - 1, dest_y))
+    # 2) Compute ROI (center band) if not provided
+    #    Default: a fairly wide box centered horizontally, ~8% of height tall,
+    #    slightly above true vertical center (where this game usually renders messages).
+    if roi is None:
+        roi_w_frac = 0.38   # width fraction of the screen (tune if needed)
+        roi_h_frac = 0.09   # height fraction (tune if needed)
+        roi_y_frac = 0.44   # top offset fraction (tune if needed)
 
-#     pyautogui.moveTo(dest_x, dest_y, duration=0.15)
-#     log(f"Moved to '{target_type}' at ({dest_x}, {dest_y})") if logger else None
-#     return True
+        w = max(200, int(W * roi_w_frac))
+        h = max(60,  int(H * roi_h_frac))
+        x = max(0, (W - w) // 2)
+        y = max(0, min(H - h - 1, int(H * roi_y_frac)))
+    else:
+        # Accept (x, y, w, h)
+        x, y, w, h = map(int, roi)
 
+    # Clamp ROI safely
+    x = max(0, min(W - 1, x))
+    y = max(0, min(H - 1, y))
+    w = max(1, min(W - x, w))
+    h = max(1, min(H - y, h))
 
-# def _get_or_find_dropdown_anchor(logger=None):
-#     """
-#     Returns cached anchor if available. Otherwise tries to detect the dropdown panel
-#     around the cursor, and caches the top-center as the anchor (the 'Select anomaly' row).
-#     """
-#     def log(msg):
-#         if callable(logger):
-#             logger(msg)
+    crop = frame[y:y+h, x:x+w]
+    if crop is None or crop.size == 0:
+        log("[read_center_status] ROI crop empty.")
+        return ""
 
-#     global _dropdown_anchor
-#     if _dropdown_anchor is not None:
-#         return _dropdown_anchor
+    # 3) Preprocess two ways: gray and binarized (Otsu)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    blur = cv2.GaussianBlur(norm, (3, 3), 0)
+    _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    inv = 255 - otsu  # some HUDs are light-on-dark, some dark-on-light
 
-#     # Try to detect the dropdown panel near the cursor (like your previous helper)
-#     try:
-#         x, y = pyautogui.position()
-#         sw, sh = pyautogui.size()
+    # 4) Run OCR on both, pick the better one by a simple confidence heuristic
+    def ocr_best(img):
+        try:
+            res = reader.readtext(img)  # returns [(bbox, text, conf), ...]
+        except Exception as e:
+            log(f"[read_center_status] easyocr failure: {e}")
+            return "", 0.0
+        if not res:
+            return "", 0.0
+        texts  = [t for _, t, _ in res if isinstance(t, str)]
+        confs  = [c for _, _, c in res if isinstance(c, (int, float))]
+        text   = " ".join(t.strip() for t in texts if t.strip())
+        score  = (sum(confs) / max(1, len(confs))) * max(1, len(text))
+        return text, float(score)
 
-#         # Region around/above cursor
-#         left   = max(0, int(x - 240))
-#         top    = max(0, int(y - 460))
-#         right  = min(sw, int(x + 240))
-#         bottom = min(sh, int(y +  80))
-#         if right - left < 40 or bottom - top < 40:
-#             return None
+    t1, s1 = ocr_best(norm)
+    t2, s2 = ocr_best(inv)
+    text = t1 if s1 >= s2 else t2
 
-#         shot = ImageGrab.grab(bbox=(left, top, right, bottom))
-#         img  = cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2BGR)
+    # 5) Clean up whitespace and return
+    cleaned = " ".join(text.split())
 
-#         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-#         _, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if debug and DEBUG_PERSIST:
+        try:
+            dbg_dir = os.path.join(BASE_DIR, "debug_center")
+            os.makedirs(dbg_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            cv2.imwrite(os.path.join(dbg_dir, f"center_roi_{ts}.png"), crop)
+        except Exception as e:
+            log(f"[read_center_status] debug save failed: {e}")
 
-#         cnts, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-#         if not cnts:
-#             return None
-
-#         largest = max(cnts, key=cv2.contourArea)
-#         x_c, y_c, w, h = cv2.boundingRect(largest)
-#         if w < 60 or h < 60:
-#             return None
-
-#         # Top-center of the dropdown, tiny nudge down (inside the first row = "Select anomaly")
-#         anchor_x = left + x_c + (w // 2)
-#         anchor_y = top  + y_c + 6
-
-#         _dropdown_anchor = (anchor_x, anchor_y)
-#         log(f"Dropdown anchor cached at: {_dropdown_anchor}") if logger else None
-#         return _dropdown_anchor
-
-#     except Exception as e:
-#         log(f"[anchor] {e}") if logger else None
-#         return None
-
-
-# def clear_dropdown_anchor():
-#     """If you need to force re-detection on the next dropdown, call this."""
-#     global _dropdown_anchor
-#     _dropdown_anchor = None
+    if logger:
+        logger(f"[read_center_status] '{cleaned}'")
+    return cleaned

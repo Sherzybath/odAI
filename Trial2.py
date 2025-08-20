@@ -1,74 +1,100 @@
+# fast_intruder_to_top_easyocr_debug.py
+# Find "Intruder" with EasyOCR, move cursor ~210px above, and save debug overlay
+
+import time
 import cv2
 import numpy as np
-import os
+import pyautogui
+from PIL import ImageGrab
 
-def clamp_box(box, img_shape):
-    """Ensure the bounding box fits within the image dimensions"""
-    height, width = img_shape[:2]
-    x1, y1, x2, y2 = map(int, box)
-    x1 = max(0, min(x1, width - 1))
-    x2 = max(0, min(x2, width))
-    y1 = max(0, min(y1, height - 1))
-    y2 = max(0, min(y2, height))
-    if x1 >= x2 or y1 >= y2:
-        return None  # Invalid box after clamping
-    return [x1, y1, x2, y2]
+# --- Config ---
+DELAY_SECONDS   = 2.0
+DELTA_TO_TOP    = 290
+NUDGE_PX        = 12
+SEARCH_PAD_XY   = (380, 260)
+UPSCALE         = 1.45
+DEBUG_SAVE      = "intruder_debug.png"
 
-def process_heatmap_debug(heatmap_path, box, output_dir="debug_heatmaps"):
-    os.makedirs(output_dir, exist_ok=True)
+def _get_reader():
+    import easyocr
+    return easyocr.Reader(['en'], gpu=False)
 
-    try:
-        img = cv2.imread(heatmap_path)
-        if img is None:
-            print(f"[ERROR] Failed to read image: {heatmap_path}")
-            return
+def _prep_fast(gray):
+    norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    blur = cv2.GaussianBlur(norm, (3, 3), 0)
+    _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return norm, bw
 
-        clamped_box = clamp_box(box, img.shape)
-        if clamped_box is None:
-            print(f"[ERROR] Invalid clamped box for: {heatmap_path}")
-            return
+def _is_intruder(txt: str) -> bool:
+    if not txt: return False
+    t = "".join(ch.lower() for ch in txt if ch.isalnum())
+    return "intrud" in t
 
-        x1, y1, x2, y2 = clamped_box
-        cropped = img[y1:y2, x1:x2]
+def _find_intruder_center(reader, img_gray):
+    if UPSCALE > 1.0:
+        img_gray = cv2.resize(img_gray, None, fx=UPSCALE, fy=UPSCALE, interpolation=cv2.INTER_CUBIC)
 
-        if cropped.size == 0:
-            print(f"[ERROR] Empty crop from: {heatmap_path}")
-            return
+    norm, bw = _prep_fast(img_gray)
+    inv = 255 - bw
 
-        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-        mean_val = np.mean(gray)
-        thresh_val = min(200, int(mean_val * 1.2))
-        _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+    def ocr_once(arr):
+        return reader.readtext(arr, detail=1, paragraph=False, decoder="greedy")
 
-        bright_pixels = cv2.countNonZero(binary)
-        total_pixels = binary.size
-        density = bright_pixels / total_pixels if total_pixels else 0
+    for variant in (norm, inv):
+        results = ocr_once(variant)
+        best = None
+        for bbox, text, conf in results:
+            if _is_intruder(text):
+                xs = [int(p[0]) for p in bbox]
+                ys = [int(p[1]) for p in bbox]
+                cx = (min(xs) + max(xs)) // 2
+                cy = (min(ys) + max(ys)) // 2
+                if best is None or conf > best[0]:
+                    best = (conf, cx, cy, bbox)
+        if best:
+            inv_scale = 1.0 / UPSCALE
+            return int(best[1] * inv_scale), int(best[2] * inv_scale), best[3]
+    return None
 
-        # Compute centroid
-        coords = cv2.findNonZero(binary)
-        centroid = None
-        if coords is not None:
-            moments = cv2.moments(binary)
-            if moments["m00"] != 0:
-                cx = int(moments["m10"] / moments["m00"])
-                cy = int(moments["m01"] / moments["m00"])
-                centroid = (cx, cy)
-                cv2.circle(binary, centroid, 10, (128), -1)
+def main():
+    reader = _get_reader()
+    print(f"[INFO] Waiting {DELAY_SECONDS:.1f}s — hover mouse near dropdown.")
+    time.sleep(DELAY_SECONDS)
 
-        base_name = os.path.basename(heatmap_path).replace(".png", "")
-        cv2.imwrite(os.path.join(output_dir, f"{base_name}_gray.png"), gray)
-        cv2.imwrite(os.path.join(output_dir, f"{base_name}_bw.png"), binary)
+    sw, sh = pyautogui.size()
+    cx, cy = pyautogui.position()
+    pad_x, pad_y = SEARCH_PAD_XY
 
-        if centroid:
-            print(f"[INFO] Processed {base_name}, Bright: {bright_pixels}, Density: {density:.4f}, Centroid: {centroid}")
-        else:
-            print(f"[INFO] Processed {base_name}, Bright: {bright_pixels}, Density: {density:.4f}, No centroid")
+    left, top   = max(0, cx - pad_x), max(0, cy - pad_y)
+    right, bottom = min(sw, cx + pad_x), min(sh, cy + pad_y)
 
-    except Exception as e:
-        print(f"[EXCEPTION] {e}")
+    roi_rgb = np.array(ImageGrab.grab(bbox=(left, top, right, bottom)))
+    roi_gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY)
 
-# Example test
+    res = _find_intruder_center(reader, roi_gray)
+    if not res:
+        print("[WARN] Could not find 'Intruder'.")
+        return
+
+    word_cx_local, word_cy_local, bbox = res
+    word_cx_screen = left + word_cx_local
+    word_cy_screen = top + word_cy_local
+
+    anchor_x = np.clip(word_cx_screen, 0, sw - 1)
+    anchor_y = np.clip(word_cy_screen - DELTA_TO_TOP + NUDGE_PX, 0, sh - 1)
+
+    pyautogui.moveTo(anchor_x, anchor_y, duration=0.08)
+    print(f"[RESULT] Moved to top row ({anchor_x}, {anchor_y}) from 'Intruder' at ({word_cx_screen}, {word_cy_screen}).")
+
+    # --- Debug overlay ---
+    dbg = roi_rgb.copy()
+    # Draw bbox in red
+    pts = np.array(bbox, dtype=np.int32)
+    cv2.polylines(dbg, [pts], isClosed=True, color=(0, 0, 255), thickness=2)
+    # Draw center dot in green
+    cv2.circle(dbg, (word_cx_local, word_cy_local), 6, (0, 255, 0), -1)
+    cv2.imwrite(DEBUG_SAVE, dbg[:, :, ::-1])  # RGB -> BGR for cv2.imwrite
+    print(f"[DEBUG] Saved overlay to {DEBUG_SAVE}")
+
 if __name__ == "__main__":
-    test_path = r"C:\Users\sdzyr\Desktop\Project\odAI\LogCabin\Bathroom\heatmaps\Bathroom_Sink_20250807_184517_HEAT.png"
-    test_box = [633.0, 1.0, 1117.0, 697.0]  # Will be clamped safely
-    process_heatmap_debug(test_path, test_box)
+    main()

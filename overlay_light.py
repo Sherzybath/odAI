@@ -11,6 +11,7 @@ import pyautogui
 from backend import move_cursor_to_anomaly
 import numpy as np
 pyautogui.FAILSAFE = False
+from selector import select_by_rank
 
 class AnomalyNotification(QtWidgets.QWidget):
     def __init__(self, message):
@@ -213,8 +214,16 @@ class OverlayLight(QtWidgets.QWidget):
             self.appendLog("No anomaly coordinates found.")
             return
 
-        # do the move+hold and dropdown handling in backend helper
         try:
+    #         select_by_rank(
+    # coords=coords,
+    # heatmap_path=heat_path,   # pass the heatmap for the chosen anomaly
+    # logger=self.appendLog,            # optional
+    # max_distance=6,                   # tweak tolerance
+    # hold_seconds=2.0,                 # your long-press
+    # step_px=60,                       # your menu spacing
+    # pause=0.18                        # hover time per option
+    #     )
             backend.move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
         except Exception as e:
             self.appendLog(f"Error moving cursor to anomaly: {e}")
