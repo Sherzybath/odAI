@@ -611,9 +611,9 @@ def move_cursor_to_dropdown_top_any_side(
 
                 os.makedirs(os.path.join(BASE_DIR, "debug_dropdown"), exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                out_path = os.path.join(BASE_DIR, "debug_dropdown", f"intruder_anchor_{ts}.png")
-                cv2.imwrite(out_path, cv2.cvtColor(dbg, cv2.COLOR_RGB2BGR))
-                if logger: logger(f"[debug] saved overlay → {out_path}")
+                # out_path = os.path.join(BASE_DIR, "debug_dropdown", f"intruder_anchor_{ts}.png")
+                # cv2.imwrite(out_path, cv2.cvtColor(dbg, cv2.COLOR_RGB2BGR))
+                # if logger: logger(f"[debug] saved overlay → {out_path}")
             except Exception as e:
                 if logger: logger(f"[debug save] {e}")
 
@@ -659,100 +659,123 @@ def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type=
     return True
 
 
-def read_center_status(logger=None, roi=None, debug=False):
+# --- Center-status OCR with debug overlay ------------------------------------
+def read_center_status(
+    logger=None,
+    *,
+    roi_rel=(0.32, 0.40, 0.68, 0.60),  # (x1_rel, y1_rel, x2_rel, y2_rel) center box
+    upscale=1.6,
+    save_debug=True,
+    debug_dir_name="debug_center_status",
+):
     """
-    Read the status text shown around the center of the screen.
-    Returns the raw string (e.g., 'Anomaly detected in the center of the screen' or
-    'No anomalies found in the center of the screen'). The selector will interpret it.
+    OCR the center of the screen for status text and (optionally) save a debug image.
 
-    Args:
-        logger: optional callable(str) for logs
-        roi: optional (x, y, w, h) absolute screen coords to override the auto-ROI
-        debug: if True and DEBUG_PERSIST, saves the cropped ROI for inspection
-
-    Notes:
-        - Uses easyocr 'reader' already initialized in backend.
-        - You can fine-tune the auto-ROI fractions below if your HUD differs.
+    Returns the raw OCR text (joined lines). Selector will interpret it.
     """
-    def log(msg):
-        if callable(logger):
-            logger(msg)
-        else:
-            print(msg)
+    try:
+        # 1) Grab full screen, crop center ROI (relative box)
+        frame = capture_screen()                        # BGR
+        H, W = frame.shape[:2]
+        x1 = max(0, int(W * roi_rel[0])); y1 = max(0, int(H * roi_rel[1]))
+        x2 = min(W, int(W * roi_rel[2])); y2 = min(H, int(H * roi_rel[3]))
+        roi_bgr = frame[y1:y2, x1:x2]
+        if roi_bgr.size == 0:
+            if logger: logger("[center OCR] ROI empty")
+            return ""
 
-    # 1) Grab full screen
-    frame = capture_screen()
-    if frame is None or frame.size == 0:
-        log("[read_center_status] capture_screen() returned empty frame.")
+        # 2) Prep for OCR
+        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+        if upscale and upscale > 1.0:
+            gray = cv2.resize(gray, None, fx=upscale, fy=upscale, interpolation=cv2.INTER_CUBIC)
+
+        # Light normalization + binarized variant
+        norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+        blur = cv2.GaussianBlur(norm, (3, 3), 0)
+        _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # 3) Run EasyOCR (norm first, then inverted BW as fallback)
+        def ocr(arr):
+            try:
+                return reader.readtext(
+                    arr,
+                    detail=1,
+                    paragraph=False,
+                    decoder="greedy",
+                    contrast_ths=0.05,
+                    adjust_contrast=0.7,
+                )
+            except Exception as e:
+                if logger: logger(f"[center OCR] {e}")
+                return []
+
+        results = ocr(norm)
+        if not results:
+            results = ocr(255 - bw)
+
+        # 4) Collect raw text + prepare debug overlay
+        raw_lines = []
+        overlay = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)  # work in upscaled ROI space
+        best_hits = []  # boxes that match either phrase
+
+        def _norm(t: str) -> str:
+            return "".join(ch.lower() for ch in (t or "")).strip()
+
+        for bbox, text, conf in results:
+            if not text:
+                continue
+            raw_lines.append(text)
+            pts = np.array(bbox, dtype=np.int32)
+            # Color code hits vs. others
+            t_norm = _norm(text)
+            hit = (("anomaly" in t_norm and "detected" in t_norm) or
+                   ("no" in t_norm and "anomal" in t_norm))
+            color = (0, 0, 255) if hit else (60, 160, 255)  # red for hits
+            cv2.polylines(overlay, [pts], True, color, 2)
+            (tx, ty) = (int(pts[0][0]), int(pts[0][1]) - 4)
+            cv2.putText(overlay, f"{text} ({conf:.2f})", (tx, max(12, ty)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            if hit:
+                best_hits.append((conf, pts, text))
+
+        # 5) Save debug (ROI + overlay placed back on full-screen box)
+        if save_debug and DEBUG_PERSIST:
+            try:
+                dbg_dir = os.path.join(BASE_DIR, debug_dir_name)
+                os.makedirs(dbg_dir, exist_ok=True)
+
+                # Downscale overlay back to ROI size if we upscaled
+                if upscale and upscale > 1.0:
+                    overlay_small = cv2.resize(
+                        overlay, (x2 - x1, y2 - y1), interpolation=cv2.INTER_AREA
+                    )
+                else:
+                    overlay_small = overlay
+
+                # Compose full-frame preview with ROI rectangle and overlay pasted
+                preview = frame.copy()
+                cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                preview[y1:y2, x1:x2] = overlay_small
+
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                # Label the file with a quick guess of interpretation
+                joined_lower = " ".join(raw_lines).lower()
+                if "anomaly" in joined_lower and "detected" in joined_lower:
+                    tag = "detected"
+                elif "no" in joined_lower and "anomal" in joined_lower:
+                    tag = "none"
+                else:
+                    tag = "unknown"
+
+                out_path = os.path.join(dbg_dir, f"center_ocr_{tag}_{ts}.png")
+                cv2.imwrite(out_path, preview)
+                if logger: logger(f"[center OCR debug] saved → {out_path}")
+            except Exception as e:
+                if logger: logger(f"[center OCR debug save] {e}")
+
+        # 6) Return what selector expects (raw text)
+        return " ".join(raw_lines)
+
+    except Exception as e:
+        if logger: logger(f"[center OCR error] {e}")
         return ""
-
-    H, W = frame.shape[:2]
-
-    # 2) Compute ROI (center band) if not provided
-    #    Default: a fairly wide box centered horizontally, ~8% of height tall,
-    #    slightly above true vertical center (where this game usually renders messages).
-    if roi is None:
-        roi_w_frac = 0.38   # width fraction of the screen (tune if needed)
-        roi_h_frac = 0.09   # height fraction (tune if needed)
-        roi_y_frac = 0.44   # top offset fraction (tune if needed)
-
-        w = max(200, int(W * roi_w_frac))
-        h = max(60,  int(H * roi_h_frac))
-        x = max(0, (W - w) // 2)
-        y = max(0, min(H - h - 1, int(H * roi_y_frac)))
-    else:
-        # Accept (x, y, w, h)
-        x, y, w, h = map(int, roi)
-
-    # Clamp ROI safely
-    x = max(0, min(W - 1, x))
-    y = max(0, min(H - 1, y))
-    w = max(1, min(W - x, w))
-    h = max(1, min(H - y, h))
-
-    crop = frame[y:y+h, x:x+w]
-    if crop is None or crop.size == 0:
-        log("[read_center_status] ROI crop empty.")
-        return ""
-
-    # 3) Preprocess two ways: gray and binarized (Otsu)
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
-    blur = cv2.GaussianBlur(norm, (3, 3), 0)
-    _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    inv = 255 - otsu  # some HUDs are light-on-dark, some dark-on-light
-
-    # 4) Run OCR on both, pick the better one by a simple confidence heuristic
-    def ocr_best(img):
-        try:
-            res = reader.readtext(img)  # returns [(bbox, text, conf), ...]
-        except Exception as e:
-            log(f"[read_center_status] easyocr failure: {e}")
-            return "", 0.0
-        if not res:
-            return "", 0.0
-        texts  = [t for _, t, _ in res if isinstance(t, str)]
-        confs  = [c for _, _, c in res if isinstance(c, (int, float))]
-        text   = " ".join(t.strip() for t in texts if t.strip())
-        score  = (sum(confs) / max(1, len(confs))) * max(1, len(text))
-        return text, float(score)
-
-    t1, s1 = ocr_best(norm)
-    t2, s2 = ocr_best(inv)
-    text = t1 if s1 >= s2 else t2
-
-    # 5) Clean up whitespace and return
-    cleaned = " ".join(text.split())
-
-    if debug and DEBUG_PERSIST:
-        try:
-            dbg_dir = os.path.join(BASE_DIR, "debug_center")
-            os.makedirs(dbg_dir, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            cv2.imwrite(os.path.join(dbg_dir, f"center_roi_{ts}.png"), crop)
-        except Exception as e:
-            log(f"[read_center_status] debug save failed: {e}")
-
-    if logger:
-        logger(f"[read_center_status] '{cleaned}'")
-    return cleaned

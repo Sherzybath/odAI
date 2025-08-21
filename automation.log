@@ -1,0 +1,73 @@
+[02:40:01] Overlay toggled to visible with F12.
+[02:40:02] Overlay toggled to hidden with F12.
+[02:40:37] Overlay toggled to visible with F12.
+[02:40:38] Overlay toggled to hidden with F12.
+[02:40:39] Overlay toggled to visible with F12.
+[02:40:40] Overlay toggled to hidden with F12.
+[02:40:48] Overlay toggled to visible with F12.
+[02:40:49] Automation started. Overlay hidden.
+[02:40:49] Mouse moved to top-left to reset position.
+[02:40:49] AHK script started.
+[02:40:50] Room: Yard – Detected 0 anomaly/anomalies.
+[02:40:57] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:41:03] Room: Living – Detected 0 anomaly/anomalies.
+[02:41:09] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:41:15] Room: Bedroom – Detected 0 anomaly/anomalies.
+[02:41:21] Room: Yard – Detected 0 anomaly/anomalies.
+[02:41:27] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:41:33] Room: Living – Detected 0 anomaly/anomalies.
+[02:41:39] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:41:45] Room: Bathroom – Detected 0 anomaly/anomalies.
+[02:41:52] Room: Yard – Detected 0 anomaly/anomalies.
+[02:41:58] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:42:04] Room: Living – Detected 0 anomaly/anomalies.
+[02:42:10] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:42:16] Room: Bathroom – Detected 2 anomaly/anomalies.
+[02:42:16] AHK script paused via F8.
+[02:42:21] Anomaly detection paused (thread stopped).
+[02:42:21] — Anomaly type ranking —
+[02:42:21]     Object Replacement  conf=0.61  dist=25
+[02:42:21]        Object Movement  conf=0.61  dist=25
+[02:42:21]                  Other  conf=0.58  dist=27
+[02:42:21]           Extra object  conf=0.53  dist=30
+[02:42:21]          Image anomaly  conf=0.50  dist=32
+[02:42:21]              Dead body  conf=0.50  dist=32
+[02:42:21]              Dead Body  conf=0.00  (no prior)
+[02:42:21]           Door Anomaly  conf=0.00  (no prior)
+[02:42:21]           Extra Object  conf=0.00  (no prior)
+[02:42:21]          Image Anomaly  conf=0.00  (no prior)
+[02:42:21]               Intruder  conf=0.00  (no prior)
+[02:42:21]         Missing Object  conf=0.00  (no prior)
+[02:42:21]    Object Manipulation  conf=0.00  (no prior)
+[02:42:21] Known match within threshold: False
+[02:42:21] Moving mouse to anomaly at (407, 827)
+[02:42:24] Mouse held for 2.0 seconds, released.
+[02:42:28] Anchor via 'Intruder' at conf=1.00; top≈(318,540) using Δ=290, nudge=12
+[02:42:28] Moved to 'Object Replacement' (index 9, +450px).
+[02:42:36] Moving mouse to anomaly at (407, 827)
+[02:42:39] Mouse held for 2.0 seconds, released.
+[02:42:43] Anchor via 'Intruder' at conf=1.00; top≈(318,540) using Δ=290, nudge=12
+[02:42:43] Moved to 'Object Movement' (index 8, +400px).
+[02:42:53] AHK script restarted.
+[02:42:53] Mouse moved to top-left to reset position.
+[02:42:53] Anomaly detection resumed.
+[02:42:54] Room: Bathroom – Detected 1 anomaly/anomalies.
+[02:42:54] AHK script paused via F8.
+[02:42:59] Anomaly detection paused (thread stopped).
+[02:42:59] — Anomaly type ranking —
+[02:42:59]     Object Replacement  conf=0.62  dist=24
+[02:42:59]                  Other  conf=0.59  dist=26
+[02:42:59]           Extra object  conf=0.52  dist=31
+[02:42:59]        Object Movement  conf=0.50  dist=32
+[02:42:59]              Dead body  conf=0.45  dist=35
+[02:42:59]          Image anomaly  conf=0.42  dist=37
+[02:42:59]              Dead Body  conf=0.00  (no prior)
+[02:42:59]           Door Anomaly  conf=0.00  (no prior)
+[02:42:59]           Extra Object  conf=0.00  (no prior)
+[02:42:59]          Image Anomaly  conf=0.00  (no prior)
+[02:42:59]               Intruder  conf=0.00  (no prior)
+[02:42:59]         Missing Object  conf=0.00  (no prior)
+[02:42:59]    Object Manipulation  conf=0.00  (no prior)
+[02:42:59] Known match within threshold: False
+[02:42:59] Moving mouse to anomaly at (1149, 783)
+[02:43:02] Mouse held for 2.0 seconds, released.

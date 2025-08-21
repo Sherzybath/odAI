@@ -44,22 +44,57 @@ def _load_map() -> Dict[str, str]:
     except Exception:
         return {}
 
-
 def _interpret_center_status(msg: str) -> str:
     """
-    Normalize the center-screen status message into one of:
-    - 'detected'  -> e.g., 'anomaly detected in the center of the screen'
-    - 'none'      -> e.g., 'no anomalies found in the center of the screen'
-    - 'unknown'   -> anything else / empty
+    Robustly normalize center-screen status:
+      - 'detected' if message indicates an anomaly in progress/confirmed
+      - 'none'     if message indicates no anomalies
+      - 'unknown'  otherwise
+
+    Tolerant to OCR noise, missing words like 'center', and phrasing variants.
     """
     if not msg:
         return 'unknown'
-    m = msg.strip().lower()
-    if "anomaly detected" in m and "center" in m:
+
+    # normalize
+    m = msg.lower()
+    # strip punctuation-like chars that OCR often injects
+    keep = []
+    for ch in m:
+        if ch.isalnum() or ch.isspace():
+            keep.append(ch)
+    s = " ".join("".join(keep).split())  # collapse whitespace
+
+    # convenience stems
+    has_anomal  = ("anomal" in s)               # anomaly/anomalies
+    has_detect  = ("detect" in s)               # detected/detecting/detection
+    has_no      = (" no " in f" {s} ") or s.startswith("no ")
+    has_found   = ("found" in s)
+    has_center  = ("center" in s) or ("centre" in s)
+    has_standby = ("stand by" in s) or ("standby" in s)
+
+    # --- Positive / "detected" cases ---
+    # 1) explicit anomaly + detected
+    if has_anomal and has_detect:
         return 'detected'
-    if "no anomalies" in m and "center" in m:
+    # 2) many UIs show "please stand by" during detection
+    if has_anomal and has_standby:
+        return 'detected'
+    # 3) sometimes just "detected" (keep as a weaker positive)
+    if has_detect and not has_no:
+        return 'detected'
+
+    # --- Negative / "none" cases ---
+    # Allow variants like "no anomaly detected", "no anomalies found",
+    # with or without "in the center of the screen".
+    if has_no and has_anomal and (has_found or has_detect or has_center):
         return 'none'
+    # Fallback: strong "no anomalies" even without other words
+    if has_no and has_anomal:
+        return 'none'
+
     return 'unknown'
+
 
 def select_and_click_until_detected(
     ranked_types,
