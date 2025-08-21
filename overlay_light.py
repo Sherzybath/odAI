@@ -215,16 +215,16 @@ class OverlayLight(QtWidgets.QWidget):
             return
 
         try:
-    #         select_by_rank(
-    # coords=coords,
-    # heatmap_path=heat_path,   # pass the heatmap for the chosen anomaly
-    # logger=self.appendLog,            # optional
-    # max_distance=6,                   # tweak tolerance
-    # hold_seconds=2.0,                 # your long-press
-    # step_px=60,                       # your menu spacing
-    # pause=0.18                        # hover time per option
-    #     )
-            backend.move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
+            select_by_rank(
+    coords=coords,
+    heatmap_path=heat_path,   # pass the heatmap for the chosen anomaly
+    logger=self.appendLog,            # optional
+    max_distance=6,                   # tweak tolerance
+    hold_seconds=2.0,                 # your long-press
+    step_px=60,                       # your menu spacing
+    pause=0.18                        # hover time per option
+        )
+            # backend.move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
         except Exception as e:
             self.appendLog(f"Error moving cursor to anomaly: {e}")
             
@@ -253,7 +253,7 @@ class OverlayLight(QtWidgets.QWidget):
 
         try:
             original_path = heat_path.replace("_HEAT", "")
-            if os.path.exists(original_path):
+            if os.path.exists(original_path):   
                 original = QtGui.QPixmap(original_path).scaled(400, 400, QtCore.Qt.KeepAspectRatio)
                 self.original_image.setPixmap(original)
                 self.appendLog("Passed test 2 – Original image displayed.")

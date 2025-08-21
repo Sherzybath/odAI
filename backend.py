@@ -166,13 +166,16 @@ def process_room(persist: bool | None = None):
             last_heat_path = heat_path
 
             anomalies.append({
-                "class_name": cls,
-                "box": region["box"],
-                "pixel_count": pix_count,
-                "heatmap_path": heat_path,
-                "transient": not persist,   # <- mark for cleanup later
-                "transient_root": heat_dir if not persist else None
-            })
+    "class_name": cls,
+    "box": region["box"],
+    "pixel_count": pix_count,
+    "heatmap_path": heat_path,
+    "baseline": tpl_crop,           # <— add
+    "current":  live_crop,          # <— add
+    "transient": not persist,
+    "transient_root": heat_dir if not persist else None
+})
+
 
     return room, anomalies, last_heat_path
 def save_classification_signature(signature: str, anomaly_type: str):
@@ -228,14 +231,23 @@ def _cleanup_transient_artifacts(anomalies):
             print(f"[WARN] Failed to remove transient file '{f}': {e}")
 
 
-def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debug_name=None):
+def convert_to_black_white_fullsize(
+    heatmap_path,
+    box=None,
+    debug_dir=None,
+    debug_name=None,
+    *,
+    baseline_bgr: np.ndarray | None = None,   # <- optional: template crop (baseline)
+    current_bgr:  np.ndarray | None = None,   # <- optional: live crop (current)
+    diff_blur_ksize: int = 5,
+    diff_thresh: int = 35,
+):
     """
     Returns (bw_mask, used_bgr, offset_xy)
-      - bw_mask: 255 = change, 0 = no change
-      - used_bgr: the BGR image we actually analyzed (crop or full)
-      - offset_xy: (x_off, y_off) to map local centroid to screen coords
+      - If baseline/current are provided, uses cv2.absdiff + threshold so only changes are white.
+      - Otherwise falls back to the previous HSV/chan heuristic.
 
-    NOTE: Debug image writes are gated by DEBUG_PERSIST.
+    offset_xy maps local coords back to full-screen.
     """
     img_full = cv2.imread(heatmap_path)
     if img_full is None:
@@ -245,23 +257,14 @@ def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debu
     Hf, Wf = img_full.shape[:2]
     x_off = y_off = 0
 
-    # Try to crop if a box was provided
+    # Choose analysis region
     if box is not None and len(box) == 4:
         x1, y1, x2, y2 = map(int, box)
-        ix1 = max(0, min(Wf, x1))
-        iy1 = max(0, min(Hf, y1))
-        ix2 = max(0, min(Wf, x2))
-        iy2 = max(0, min(Hf, y2))
-
+        ix1 = max(0, min(Wf, x1)); iy1 = max(0, min(Hf, y1))
+        ix2 = max(0, min(Wf, x2)); iy2 = max(0, min(Hf, y2))
         if ix2 > ix1 and iy2 > iy1:
-            cropped = img_full[iy1:iy2, ix1:ix2]
-            if cropped.size > 0:
-                used = cropped
-                x_off, y_off = x1, y1  # local->screen
-            else:
-                print(f"[WARN] Crop empty after clamp for {os.path.basename(heatmap_path)}; using full heatmap")
-                used = img_full
-                x_off, y_off = x1, y1
+            used = img_full[iy1:iy2, ix1:ix2]
+            x_off, y_off = x1, y1
         else:
             print(f"[WARN] Box collapses after clamp ({box}) on {os.path.basename(heatmap_path)}; using full heatmap")
             used = img_full
@@ -269,7 +272,45 @@ def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debu
     else:
         used = img_full
 
-    # Build BW mask (broad warm hue capture)
+    # ----------------------------
+    # Preferred path: ABS-DIFF
+    # ----------------------------
+    if baseline_bgr is not None and current_bgr is not None:
+        try:
+            # Make sure sizes match
+            bh, bw = baseline_bgr.shape[:2]
+            ch, cw = current_bgr.shape[:2]
+            if (bh, bw) != (ch, cw):
+                target = (used.shape[1], used.shape[0])
+                baseline = cv2.resize(baseline_bgr, target, interpolation=cv2.INTER_AREA)
+                current  = cv2.resize(current_bgr,  target, interpolation=cv2.INTER_AREA)
+            else:
+                baseline, current = baseline_bgr, current_bgr
+
+            base_g = cv2.cvtColor(baseline, cv2.COLOR_BGR2GRAY)
+            curr_g = cv2.cvtColor(current,  cv2.COLOR_BGR2GRAY)
+            base_g = cv2.GaussianBlur(base_g, (diff_blur_ksize, diff_blur_ksize), 0)
+            curr_g = cv2.GaussianBlur(curr_g, (diff_blur_ksize, diff_blur_ksize), 0)
+
+            diff = cv2.absdiff(base_g, curr_g)
+            _, bw = cv2.threshold(diff, diff_thresh, 255, cv2.THRESH_BINARY)
+
+            # tidy noise
+            bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=1)
+            bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8), iterations=1)
+
+            if DEBUG_PERSIST and debug_dir:
+                os.makedirs(debug_dir, exist_ok=True)
+                name = debug_name or os.path.basename(heatmap_path)
+                cv2.imwrite(os.path.join(debug_dir, f"DIFF_{name}"), bw)
+
+            return bw, current, (x_off, y_off)
+        except Exception as e:
+            print(f"[WARN] absdiff path failed, falling back to HSV heuristic: {e}")
+
+    # ----------------------------
+    # Fallback: HSV heuristic (your original logic)
+    # ----------------------------
     hsv = cv2.cvtColor(used, cv2.COLOR_BGR2HSV)
 
     mask_red  = cv2.inRange(hsv, (0,   40,  40), (10,  255, 255)) | \
@@ -290,7 +331,6 @@ def convert_to_black_white_fullsize(heatmap_path, box=None, debug_dir=None, debu
     bw = cv2.medianBlur(bw, 3)
     bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
 
-    # Only write BW debug if persistence is enabled
     if DEBUG_PERSIST and debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         name = debug_name or os.path.basename(heatmap_path)
@@ -376,11 +416,14 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected", persist: bool
         print(f"[DEBUG] Processing: {heatmap_path}")
 
         bw, used_bgr, (x_off, y_off) = convert_to_black_white_fullsize(
-            heatmap_path,
-            box=box,
-            debug_dir=local_debug_dir,
-            debug_name=os.path.basename(heatmap_path)
-        )
+    heatmap_path,
+    box=box,
+    debug_dir=local_debug_dir,
+    debug_name=os.path.basename(heatmap_path),
+    baseline_bgr=a.get("baseline"),   # <— pass along
+    current_bgr=a.get("current")      # <— pass along
+)
+
         if bw is None or used_bgr is None:
             continue
 
