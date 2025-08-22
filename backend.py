@@ -626,7 +626,7 @@ def move_cursor_to_dropdown_top_any_side(
 
 
 
-def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type="Object Replacement", logger=None):
+def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type="Extra Object", logger=None):
     if not coords:
         if logger: logger("No coordinates provided to move_cursor_to_anomaly.")
         return False

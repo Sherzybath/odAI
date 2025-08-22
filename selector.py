@@ -5,7 +5,13 @@ import cv2
 import pyautogui
 from typing import Tuple, Optional, Dict
 import numpy as np
-from backend import move_cursor_to_anomaly, move_cursor_to_dropdown_top_any_side, ANOMALY_POSITIONS
+from backend import (
+    move_cursor_to_anomaly,
+    move_cursor_to_dropdown_top_any_side,
+    ANOMALY_POSITIONS,
+    classify_heatmap,
+    save_classification_signature,
+)
 import time
 
 try:
@@ -102,25 +108,27 @@ def select_and_click_until_detected(
     read_center_status,
     click_fn=None,
     wait_seconds: int = 5,
+    poll_total: float = 2.5,   # extra time to poll after the initial wait
+    poll_step: float = 0.25,   # poll interval
 ):
     """
-    Iterate over ranked types (most likely -> least likely).
-    For each:
-      1) move cursor to that anomaly candidate
-      2) click
-      3) wait `wait_seconds`
-      4) read center status
-         - if status says 'no anomalies...' -> try next type
-         - if status says 'anomaly detected...' -> stop
-    Prints each type with confidence and the outcome.
+    Try anomaly types (most likely → least likely), click each, and wait for detection.
+    Returns the winning label on success, or None if none confirmed.
     """
-    # Lazy import to avoid hard dependency if caller injects a custom click_fn
-    if click_fn is None:
+
+    # Safe single-click helper (prevents stuck/down states)
+    def _safe_click():
         try:
             import pyautogui
-            click_fn = lambda: pyautogui.click()
+            pyautogui.mouseUp(button='left')
+            pyautogui.click()
+            pyautogui.mouseUp(button='left')
         except Exception:
-            click_fn = lambda: None
+            pass
+
+    # Choose click fn
+    if click_fn is None:
+        click_fn = _safe_click
 
     print("=== Candidate types (most likely → least likely) ===")
     for idx, (t, conf) in enumerate(ranked_types, start=1):
@@ -134,6 +142,7 @@ def select_and_click_until_detected(
             print(f"[TRY {idx}] move_cursor_to_anomaly('{t}') failed: {e}")
             continue
 
+        # Click the candidate
         try:
             click_fn()
             print(f"[TRY {idx}] Clicked. Waiting {wait_seconds}s …")
@@ -141,6 +150,7 @@ def select_and_click_until_detected(
             print(f"[TRY {idx}] click failed: {e}")
         time.sleep(wait_seconds)
 
+        # First read
         try:
             status_raw = read_center_status() or ""
         except Exception as e:
@@ -150,9 +160,26 @@ def select_and_click_until_detected(
         norm = _interpret_center_status(status_raw)
         print(f"[TRY {idx}] Center status: '{status_raw}' → {norm}")
 
+        # If unclear, poll a few times quickly (more robust than a single read)
+        if norm == 'unknown' and poll_total > 0 and poll_step > 0:
+            t_end = time.time() + poll_total
+            while time.time() < t_end:
+                time.sleep(poll_step)
+                try:
+                    sr = read_center_status() or ""
+                except Exception as e:
+                    print(f"[TRY {idx}] read_center_status (poll) failed: {e}")
+                    sr = ""
+                nn = _interpret_center_status(sr)
+                print(f"[TRY {idx}] Poll status: '{sr}' → {nn}")
+                if nn != 'unknown':
+                    norm = nn
+                    status_raw = sr
+                    break
+
         if norm == 'detected':
             print(f"[SUCCESS] Anomaly confirmed after selecting '{t}'.")
-            return
+            return t  # <-- return the winning label
         elif norm == 'none':
             print(f"[TRY {idx}] No anomaly with '{t}'. Trying next …")
             continue
@@ -161,6 +188,7 @@ def select_and_click_until_detected(
             continue
 
     print("[END] Exhausted all candidates without a confirmed anomaly.")
+    return None
 
 
 def _rank_labels_for_heatmap(heatmap_path: str,
@@ -211,85 +239,100 @@ def _rank_labels_for_heatmap(heatmap_path: str,
     # Decide "known" by threshold on the best seen distance
     is_known = bool(seen) and (seen[0]["distance"] <= max_distance)
     return is_known, ranked_details
-def select_by_rank(coords,
-                   heatmap_path: str,
-                   logger=None,
-                   max_distance: int = 6,
-                   distance_cap: int = 64,
-                   hold_seconds: float = 2.0,
-                   step_px: int = 60,           # kept for compatibility; unused in click-loop
-                   pause: float = 0.18,          # kept for compatibility; unused in click-loop
-                   read_center_status=None,
-                   click_fn=None,
-                   wait_seconds: int = 5) -> None:
+def select_by_rank(
+    coords,
+    heatmap_path: str,
+    logger=None,
+    max_distance: int = 6,
+    distance_cap: int = 64,
+    hold_seconds: float = 2.0,
+    step_px: int = 60,      # kept for compatibility; unused in click-loop
+    pause: float = 0.18,    # kept for compatibility; unused in click-loop
+    read_center_status=None,
+    click_fn=None,
+    wait_seconds: int = 5,
+    room: str | None = None,          # <— pass room in your caller
+) -> str | None:                      # <— return the winning label (or None)
     """
     1) Rank labels for the given heatmap (with confidences).
-    2) Log all labels with confidence.
-    3) For each label (most likely → least likely):
-         - move to that anomaly type in the dropdown,
-         - click,
-         - wait `wait_seconds`,
-         - read center status; stop on 'anomaly detected', otherwise continue.
+    2) Try labels most likely → least likely until detection.
+    3) On success: persist dhash→label in classification_map.json and copy heatmap into classifications/<room>/<label>.
+    Returns the winning label, or None.
     """
-
     def log(msg: str):
         if callable(logger):
             logger(msg)
         else:
             print(msg)
 
-    # Robust lazy auto-wire for backend.read_center_status
+    # Auto-wire backend.read_center_status if not provided
     if read_center_status is None:
         try:
-            import backend as _be
+            import backend as _be, importlib
             read_center_status = getattr(_be, "read_center_status", None)
             if read_center_status is None:
-                import importlib
-                _be = importlib.reload(_be)  # pick up newly added function
+                _be = importlib.reload(_be)
                 read_center_status = getattr(_be, "read_center_status", None)
         except Exception:
             read_center_status = None
 
     if read_center_status is None or not callable(read_center_status):
         log("read_center_status callable is required for detection loop.")
-        return
+        return None
 
     is_known, ranked_details = _rank_labels_for_heatmap(
         heatmap_path, max_distance=max_distance, distance_cap=distance_cap
     )
-
     if not ranked_details:
         log("No labels found to select.")
-        return
+        return None
 
-    # Log the full ranking with confidences
+    # Log ranking
     log("— Anomaly type ranking —")
     for item in ranked_details:
-        lab  = item["label"]
-        d    = item["distance"]
-        conf = item["confidence"]
+        lab, d, conf = item["label"], item["distance"], item["confidence"]
         if d is None:
             log(f"  {lab:>20}  conf={conf:.2f}  (no prior)")
         else:
             log(f"  {lab:>20}  conf={conf:.2f}  dist={d}")
     log(f"Known match within threshold: {is_known}")
 
-    # Prepare (label, confidence) tuples for the click-iterate loop
     ranked_types = [(item["label"], float(item["confidence"])) for item in ranked_details]
 
-    # Wrapper to move to the specific label inside your dropdown flow
     def _move_to_label(label: str):
-        move_cursor_to_anomaly(coords,
-                               hold_seconds=hold_seconds,
-                               dropdown=True,
-                               anomaly_type=label,
-                               logger=logger)
+        move_cursor_to_anomaly(
+            coords,
+            hold_seconds=hold_seconds,
+            dropdown=True,
+            anomaly_type=label,
+            logger=logger
+        )
 
-    # Run the click → wait → read loop until detection or exhaustion
-    select_and_click_until_detected(
+    # Try candidates; this should return the winning label (per earlier change)
+    winning_label = select_and_click_until_detected(
         ranked_types=ranked_types,
         move_cursor_to_anomaly=_move_to_label,
         read_center_status=read_center_status,
         click_fn=click_fn,
         wait_seconds=wait_seconds,
     )
+
+    # Persist on success
+    if winning_label:
+        try:
+            sig = _dhash_signature(heatmap_path)
+            if sig:
+                save_classification_signature(sig, winning_label)
+                log(f"[persist] signature saved: {sig} → {winning_label}")
+            else:
+                log("[persist] could not compute signature; JSON not updated.")
+
+            if room:
+                out = classify_heatmap(room, heatmap_path, winning_label)
+                log(f"[persist] heatmap copied → {out}")
+            else:
+                log("[persist] room is None; skipped copying heatmap to classifications/")
+        except Exception as e:
+            log(f"[persist] error: {e}")
+
+    return winning_label

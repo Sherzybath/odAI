@@ -288,16 +288,18 @@ class OverlayLight(QtWidgets.QWidget):
 
         # Resolve the anomaly (dropdown select + confirmation loop)
         try:
-            select_by_rank(
-                coords=coords,
-                heatmap_path=heat_path,
-                logger=self.appendLog,
-                max_distance=6,
-                hold_seconds=2.0,
-                step_px=60,
-                pause=0.18,
-                wait_seconds=5
-            )
+            winner = select_by_rank(
+    coords=coords,
+    heatmap_path=heat_path,
+    logger=self.appendLog,
+    max_distance=6,
+    hold_seconds=2.0,
+    step_px=60,
+    pause=0.18,
+    wait_seconds=5,
+    room=room,   # <— important
+)
+            # backend.move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
         except Exception as e:
             self.appendLog(f"Error moving cursor to anomaly: {e}")
 
@@ -340,7 +342,7 @@ class OverlayLight(QtWidgets.QWidget):
     # step_px=60,                       # your menu spacing
     # pause=0.18                        # hover time per option
     #     )
-    #         # backend.move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=True, logger=self.appendLog)
+            
     #     except Exception as e:
     #         self.appendLog(f"Error moving cursor to anomaly: {e}")
             
