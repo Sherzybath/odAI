@@ -6,13 +6,14 @@ import pyautogui
 from typing import Tuple, Optional, Dict
 import numpy as np
 from backend import (
-    move_cursor_to_anomaly,
-    move_cursor_to_dropdown_top_any_side,
-    ANOMALY_POSITIONS,
+    open_dropdown_and_anchor,          # NEW
+    move_cursor_to_label_at_anchor,    # NEW
+    reopen_dropdown_and_hover,         # NEW
     classify_heatmap,
     save_classification_signature,
+    ANOMALY_POSITIONS,
 )
-import time
+import time 
 
 try:
     from backend import read_center_status as _backend_read_center_status
@@ -299,14 +300,31 @@ def select_by_rank(
 
     ranked_types = [(item["label"], float(item["confidence"])) for item in ranked_details]
 
+    anchor = None
+
     def _move_to_label(label: str):
-        move_cursor_to_anomaly(
-            coords,
-            hold_seconds=hold_seconds,
-            dropdown=True,
-            anomaly_type=label,
-            logger=logger
-        )
+        nonlocal anchor
+        if anchor is None:
+            # First try: open menu and detect anchor, then hover label
+            anchor = open_dropdown_and_anchor(coords, hold_seconds=hold_seconds, logger=logger)
+            if not anchor:
+                log("Failed to open dropdown / anchor; aborting selection for this label.")
+                return
+            ok = move_cursor_to_label_at_anchor(anchor, label, step_px=step_px, logger=logger)
+            if not ok:
+                log(f"Could not hover '{label}' after anchoring.")
+        else:
+            # Subsequent tries: re-open at coords, then hover via stored anchor
+            ok = reopen_dropdown_and_hover(
+                coords=coords,
+                anchor=anchor,
+                label=label,
+                hold_seconds=hold_seconds,
+                step_px=step_px,
+                logger=logger
+            )
+            if not ok:
+                log(f"Could not re-open/hover '{label}' via stored anchor.")
 
     # Try candidates; this should return the winning label (per earlier change)
     winning_label = select_and_click_until_detected(

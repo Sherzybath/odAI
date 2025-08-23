@@ -163,14 +163,14 @@ class OverlayLight(QtWidgets.QWidget):
     
 
     def pause_detection(self):
-        """Stop AHK (F8) and pause the detector thread while we resolve an anomaly."""
+
         # Stop AHK
         try:
             keyboard.press_and_release("f8")
             self.appendLog("AHK script paused via F8.")
         except Exception as e:
             self.appendLog(f"AHK pause (F8) failed: {e}")
-        self.ahk_process = None  # we no longer track a running proc while paused
+        self.ahk_process = None  
 
         # Stop detector thread
         if self.detector:
@@ -184,7 +184,7 @@ class OverlayLight(QtWidgets.QWidget):
 
 
     def resume_detection(self):
-        time.sleep(1.7)
+
         """Restart AHK and resume the detector loop."""
         # Start AHK
         try:
@@ -271,7 +271,6 @@ class OverlayLight(QtWidgets.QWidget):
 
         # Pause everything (AHK via F8 + detector thread) while we resolve
         self.pause_detection()
-        self.notify_anomaly(f"Anomaly detected in {room}!")
 
         try:
             coords = backend.get_anomaly_coordinates(anomalies)
@@ -304,50 +303,9 @@ class OverlayLight(QtWidgets.QWidget):
             self.appendLog(f"Error moving cursor to anomaly: {e}")
 
         # Small cushion (optional) before resuming
-        time.sleep(0.5)
+        time.sleep(3)
 
-        # Resume AHK + detector for next room scan
         self.resume_detection()
-    # def handle_detection(self, room, anomalies, heat_path):
-    # # ensure variable is defined to avoid "referenced before assignment" error
-
-    #     if not room:
-    #         self.appendLog("Room detection failed.")
-    #         return
-
-    #     self.appendLog(f"Room: {room} – Detected {len(anomalies)} anomaly/anomalies.")
-    #     if not anomalies:
-    #         return
-    #     self.stop_automation()
-
-    #     self.notify_anomaly(f"Anomaly detected in {room}!")
-
-    #     try:
-    #         coords = backend.get_anomaly_coordinates(anomalies)
-    #     except Exception as e:
-    #         self.appendLog(f"Error while selecting anomaly coordinates: {e}")
-    #         return
-
-    #     if not coords:
-    #         self.appendLog("No anomaly coordinates found.")
-    #         return
-
-    #     try:
-    #         select_by_rank(
-    # coords=coords,
-    # heatmap_path=heat_path,   # pass the heatmap for the chosen anomaly
-    # logger=self.appendLog,            # optional
-    # max_distance=6,                   # tweak tolerance
-    # hold_seconds=2.0,                 # your long-press
-    # step_px=60,                       # your menu spacing
-    # pause=0.18                        # hover time per option
-    #     )
-            
-    #     except Exception as e:
-    #         self.appendLog(f"Error moving cursor to anomaly: {e}")
-            
-        
-
     def handle_error(self, error_msg):
         self.appendLog(f"Error during detection: {error_msg}")
 

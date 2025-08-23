@@ -26,10 +26,10 @@ pyautogui.FAILSAFE = False
 
 # ────────────────────────────────────────────────────────────────────
 ANOMALY_POSITIONS = {
-    "Dead Body": 1,
-    "Door Anomaly": 2,
-    "Extra Object": 3,
-    "Image Anomaly": 4,
+    "Dead body": 1,
+    "Door anomaly": 2,
+    "Extra object": 3,
+    "Image anomaly": 4,
     "Intruder": 5,
     "Missing Object": 6,
     "Object Manipulation": 7,
@@ -632,24 +632,26 @@ def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type=
         return False
 
     x, y = coords
-    if logger: logger(f"Moving mouse to anomaly at ({x}, {y})")
+    if logger: logger(f"[cursor] long-press at anomaly coords ({x},{y}) for {hold_seconds:.2f}s")
     pyautogui.moveTo(x, y, duration=0.2)
-
-    pyautogui.mouseDown()
-    time.sleep(hold_seconds)
-    pyautogui.mouseUp()
-    if logger: logger(f"Mouse held for {hold_seconds} seconds, released.")
+    pyautogui.mouseDown(); time.sleep(hold_seconds); pyautogui.mouseUp()
 
     if dropdown:
-        time.sleep(0.15)  # let menu render
+        time.sleep(0.15)
         anchor = move_cursor_to_dropdown_top_any_side(logger=logger)
         if anchor:
             if anomaly_type:
                 idx = ANOMALY_POSITIONS.get(anomaly_type)
                 if idx is not None:
                     ax, ay = anchor
-                    pyautogui.moveTo(ax, ay + idx * 60, duration=0.12)
-                    if logger: logger(f"Moved to '{anomaly_type}' (index {idx}, +{idx*50}px).")
+                    sw, sh = pyautogui.size()
+                    dest_x, dest_y = ax, ay + idx * 60
+                    dest_x = max(0, min(sw - 1, dest_x))
+                    dest_y = max(0, min(sh - 1, dest_y))
+                    if logger:
+                        logger(f"[cursor] hover '{anomaly_type}' idx={idx} → ({dest_x},{dest_y}) "
+                               f"[anchor=({ax},{ay}) screen={sw}x{sh}]")
+                    pyautogui.moveTo(dest_x, dest_y, duration=0.12)
                 else:
                     if logger: logger(f"Unknown anomaly type: {anomaly_type}")
             else:
@@ -658,6 +660,67 @@ def move_cursor_to_anomaly(coords, hold_seconds=2, dropdown=False, anomaly_type=
             if logger: logger("Failed to anchor dropdown; leaving cursor in place.")
     return True
 
+# --- NEW HELPERS ---
+from typing import Optional, Tuple
+
+
+def open_dropdown_and_anchor(coords, hold_seconds: float = 2.0, logger=None):
+    if not coords:
+        if logger: logger("open_dropdown_and_anchor: coords missing.")
+        return None
+    x, y = coords
+    try:
+        if logger: logger(f"[cursor] long-press at anomaly coords ({x},{y}) for {hold_seconds:.2f}s")
+        pyautogui.moveTo(x, y, duration=0.2)
+        pyautogui.mouseDown(); time.sleep(hold_seconds); pyautogui.mouseUp()
+        time.sleep(0.15)
+        anchor = move_cursor_to_dropdown_top_any_side(logger=logger)
+        if not anchor:
+            if logger: logger("[cursor] open_dropdown_and_anchor: failed to find dropdown anchor")
+            return None
+        if logger: logger(f"[anchor] dropdown top-row anchor set to {anchor}")
+        return anchor
+    except Exception as e:
+        if logger: logger(f"open_dropdown_and_anchor error: {e}")
+        return None
+
+def move_cursor_to_label_at_anchor(anchor, label: str, step_px: int = 60, logger=None) -> bool:
+    if not anchor:
+        if logger: logger("move_cursor_to_label_at_anchor: anchor missing.")
+        return False
+    idx = ANOMALY_POSITIONS.get(label)
+    if idx is None:
+        if logger: logger(f"move_cursor_to_label_at_anchor: unknown label '{label}'")
+        return False
+    try:
+        ax, ay = anchor
+        sw, sh = pyautogui.size()
+        dest_x, dest_y = ax, ay + idx * step_px
+        dest_x = max(0, min(sw - 1, dest_x))
+        dest_y = max(0, min(sh - 1, dest_y))
+        if logger:
+            logger(f"[cursor] hover '{label}' idx={idx} step={step_px} → ({dest_x},{dest_y}) "
+                   f"[anchor=({ax},{ay}) screen={sw}x{sh}]")
+        pyautogui.moveTo(dest_x, dest_y, duration=0.12)
+        return True
+    except Exception as e:
+        if logger: logger(f"move_cursor_to_label_at_anchor error: {e}")
+        return False
+
+def reopen_dropdown_and_hover(coords, anchor, label, hold_seconds: float = 2.0, step_px: int = 60, logger=None) -> bool:
+    if not coords or not anchor:
+        if logger: logger("reopen_dropdown_and_hover: coords/anchor missing.")
+        return False
+    try:
+        x, y = coords
+        if logger: logger(f"[cursor] re-open dropdown: long-press at ({x},{y}) for {hold_seconds:.2f}s")
+        pyautogui.moveTo(x, y, duration=0.2)
+        pyautogui.mouseDown(); time.sleep(hold_seconds); pyautogui.mouseUp()
+        time.sleep(0.12)
+        return move_cursor_to_label_at_anchor(anchor, label, step_px=step_px, logger=logger)
+    except Exception as e:
+        if logger: logger(f"reopen_dropdown_and_hover error: {e}")
+        return False
 
 # --- Center-status OCR with debug overlay ------------------------------------
 def read_center_status(
