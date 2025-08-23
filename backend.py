@@ -237,17 +237,24 @@ def convert_to_black_white_fullsize(
     debug_dir=None,
     debug_name=None,
     *,
-    baseline_bgr: np.ndarray | None = None,   # <- optional: template crop (baseline)
-    current_bgr:  np.ndarray | None = None,   # <- optional: live crop (current)
-    diff_blur_ksize: int = 5,
-    diff_thresh: int = 35,
+    baseline_bgr: np.ndarray | None = None,
+    current_bgr:  np.ndarray | None = None,
+    diff_blur_ksize: int = 3,     # was 5 → smaller to keep edges
+    diff_thresh: int | str = "auto",  # 35 → "auto" (Otsu/percentile); or an int (e.g., 18–28)
+    morph_open: int = 1,          # opening iterations
+    morph_close: int = 2,         # closing iterations
+    min_white_frac: float = 0.0002,   # if mask too sparse, we’ll gently dilate
+    max_white_frac: float = 0.25,     # if mask too dense, we’ll erode
+    assist_hsv: bool = True,      # fuse a weak HSV mask when diff is too sparse
 ):
     """
-    Returns (bw_mask, used_bgr, offset_xy)
-      - If baseline/current are provided, uses cv2.absdiff + threshold so only changes are white.
-      - Otherwise falls back to the previous HSV/chan heuristic.
+    Returns (bw_mask, used_bgr, offset_xy).
+    If baseline/current are provided, prefers abs-diff path with adaptive threshold.
+    Otherwise falls back to HSV/chan heuristic.
 
-    offset_xy maps local coords back to full-screen.
+    Heuristics guardrails:
+      - If result too sparse -> dilate a bit
+      - If too dense         -> erode a bit
     """
     img_full = cv2.imread(heatmap_path)
     if img_full is None:
@@ -257,7 +264,7 @@ def convert_to_black_white_fullsize(
     Hf, Wf = img_full.shape[:2]
     x_off = y_off = 0
 
-    # Choose analysis region
+    # region selection
     if box is not None and len(box) == 4:
         x1, y1, x2, y2 = map(int, box)
         ix1 = max(0, min(Wf, x1)); iy1 = max(0, min(Hf, y1))
@@ -272,14 +279,23 @@ def convert_to_black_white_fullsize(
     else:
         used = img_full
 
+    # handy debug helper
+    def _dump(name, mat):
+        if DEBUG_PERSIST and debug_dir:
+            try:
+                os.makedirs(debug_dir, exist_ok=True)
+                nm = debug_name or os.path.basename(heatmap_path)
+                cv2.imwrite(os.path.join(debug_dir, f"{name}_{nm}"), mat)
+            except Exception as e:
+                print(f"[debug save] {e}")
+
     # ----------------------------
     # Preferred path: ABS-DIFF
     # ----------------------------
     if baseline_bgr is not None and current_bgr is not None:
         try:
-            # Make sure sizes match
-            bh, bw = baseline_bgr.shape[:2]
-            ch, cw = current_bgr.shape[:2]
+            # size match
+            bh, bw = baseline_bgr.shape[:2]; ch, cw = current_bgr.shape[:2]
             if (bh, bw) != (ch, cw):
                 target = (used.shape[1], used.shape[0])
                 baseline = cv2.resize(baseline_bgr, target, interpolation=cv2.INTER_AREA)
@@ -289,54 +305,104 @@ def convert_to_black_white_fullsize(
 
             base_g = cv2.cvtColor(baseline, cv2.COLOR_BGR2GRAY)
             curr_g = cv2.cvtColor(current,  cv2.COLOR_BGR2GRAY)
-            base_g = cv2.GaussianBlur(base_g, (diff_blur_ksize, diff_blur_ksize), 0)
-            curr_g = cv2.GaussianBlur(curr_g, (diff_blur_ksize, diff_blur_ksize), 0)
+
+            # Improve contrast a bit (CLAHE)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            base_g = clahe.apply(base_g)
+            curr_g = clahe.apply(curr_g)
+
+            # Gentle blur
+            k = max(1, int(diff_blur_ksize)); k = k + 1 if k % 2 == 0 else k
+            base_g = cv2.GaussianBlur(base_g, (k, k), 0)
+            curr_g = cv2.GaussianBlur(curr_g, (k, k), 0)
 
             diff = cv2.absdiff(base_g, curr_g)
-            _, bw = cv2.threshold(diff, diff_thresh, 255, cv2.THRESH_BINARY)
+            _dump("D0_DIFF", diff)
 
-            # tidy noise
-            bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=1)
-            bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8), iterations=1)
+            # Threshold
+            if isinstance(diff_thresh, str) and diff_thresh.lower() == "auto":
+                # Try Otsu; if too low, fallback to percentile
+                _th_val, bw = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                if _th_val < 12:  # very low → likely flat image; pick percentile
+                    p = np.percentile(diff, 85)  # 80–90 is a good range
+                    tval = max(8, min(64, int(p)))
+                    _, bw = cv2.threshold(diff, tval, 255, cv2.THRESH_BINARY)
+            else:
+                tval = int(diff_thresh)
+                _, bw = cv2.threshold(diff, tval, 255, cv2.THRESH_BINARY)
 
-            if DEBUG_PERSIST and debug_dir:
-                os.makedirs(debug_dir, exist_ok=True)
-                name = debug_name or os.path.basename(heatmap_path)
-                cv2.imwrite(os.path.join(debug_dir, f"DIFF_{name}"), bw)
+            _dump("D1_THRESH", bw)
 
+            # Morphology (opening small specks, closing small gaps)
+            k3 = np.ones((3,3), np.uint8)
+            if morph_open > 0:
+                bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, k3, iterations=morph_open)
+            if morph_close > 0:
+                bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k3, iterations=morph_close)
+
+            # Density guardrails
+            frac = float(cv2.countNonZero(bw)) / float(bw.size)
+            if frac < min_white_frac:
+                # too sparse → dilate a touch
+                bw = cv2.dilate(bw, np.ones((3,3), np.uint8), iterations=1)
+                _dump("D2_DILATE_SPARSE", bw)
+            elif frac > max_white_frac:
+                # too dense → erode a touch
+                bw = cv2.erode(bw, np.ones((3,3), np.uint8), iterations=1)
+                _dump("D2_ERODE_DENSE", bw)
+
+            # If still too sparse and allowed, blend in a weak HSV assist
+            if assist_hsv:
+                frac = float(cv2.countNonZero(bw)) / float(bw.size)
+                if frac < min_white_frac * 0.75:
+                    hsv = cv2.cvtColor(current, cv2.COLOR_BGR2HSV)
+                    mask_red  = cv2.inRange(hsv, (0,40,40), (10,255,255)) | cv2.inRange(hsv, (160,40,40), (180,255,255))
+                    mask_warm = cv2.inRange(hsv, (10,30,30), (40,255,255))
+                    assist = cv2.bitwise_or(mask_red, mask_warm)
+                    assist = cv2.medianBlur(assist, 3)
+                    bw = cv2.bitwise_or(bw, assist)
+                    _dump("D3_ASSIST", bw)
+
+            _dump("D4_FINAL", bw)
             return bw, current, (x_off, y_off)
+
         except Exception as e:
             print(f"[WARN] absdiff path failed, falling back to HSV heuristic: {e}")
 
     # ----------------------------
-    # Fallback: HSV heuristic (your original logic)
+    # Fallback: HSV heuristic (tightened)
     # ----------------------------
     hsv = cv2.cvtColor(used, cv2.COLOR_BGR2HSV)
-
-    mask_red  = cv2.inRange(hsv, (0,   40,  40), (10,  255, 255)) | \
-                cv2.inRange(hsv, (160, 40,  40), (180, 255, 255))
-    mask_warm = cv2.inRange(hsv, (10,  30,  30), (40,  255, 255))
-
+    mask_red  = cv2.inRange(hsv, (0,40,40), (10,255,255)) | cv2.inRange(hsv, (160,40,40), (180,255,255))
+    mask_warm = cv2.inRange(hsv, (10,35,35), (38,255,255))   # slightly tighter upper hue
     b, g, r = cv2.split(used)
-    mask_r = (r.astype(np.int16) - np.maximum(g, b).astype(np.int16)) > 20
-    mask_y = (r > 150) & (g > 130) & (b < 170)
+    mask_r = (r.astype(np.int16) - np.maximum(g, b).astype(np.int16)) > 18
+    mask_y = (r > 145) & (g > 125) & (b < 175)
     mask_chan = (mask_r | mask_y).astype(np.uint8) * 255
 
-    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    not_blue = ((h < 85) | (h > 135)) & (s >= 40) & (v >= 45)
-    mask_not_blue = not_blue.astype(np.uint8) * 255
-
     bw = cv2.bitwise_or(mask_red | mask_warm, mask_chan)
-    bw = cv2.bitwise_or(bw, mask_not_blue)
+
+    # less aggressive "not_blue" (optional): comment out if it over-selects
+    # h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    # not_blue = ((h < 85) | (h > 135)) & (s >= 40) & (v >= 45)
+    # bw = cv2.bitwise_or(bw, not_blue.astype(np.uint8) * 255)
+
     bw = cv2.medianBlur(bw, 3)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=1)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8), iterations=2)
 
-    if DEBUG_PERSIST and debug_dir:
-        os.makedirs(debug_dir, exist_ok=True)
-        name = debug_name or os.path.basename(heatmap_path)
-        cv2.imwrite(os.path.join(debug_dir, f"BW_{name}"), bw)
+    # Guardrails again
+    frac = float(cv2.countNonZero(bw)) / float(bw.size)
+    if frac < min_white_frac:
+        bw = cv2.dilate(bw, np.ones((3,3), np.uint8), iterations=1)
+        _dump("H1_DILATE_SPARSE", bw)
+    elif frac > max_white_frac:
+        bw = cv2.erode(bw, np.ones((3,3), np.uint8), iterations=1)
+        _dump("H1_ERODE_DENSE", bw)
 
+    _dump("H_FINAL", bw)
     return bw, used, (x_off, y_off)
+
 
 
 def _centroid_from_mask(bw: np.ndarray, *, try_merge=True):
