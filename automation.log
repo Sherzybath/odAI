@@ -1,27 +1,205 @@
-[01:51:21] Overlay toggled to visible with F12.
-[01:51:22] Automation started. Overlay hidden.
-[01:51:22] Mouse moved to top-left to reset position.
-[01:51:23] AHK script started.
-[01:51:23] Room: Yard – Detected 0 anomaly/anomalies.
-[01:51:29] Room: Entryway – Detected 0 anomaly/anomalies.
-[01:51:35] Room: Living – Detected 0 anomaly/anomalies.
-[01:51:41] Room: Kitchen – Detected 0 anomaly/anomalies.
-[01:51:47] Room: Bedroom – Detected 1 anomaly/anomalies.
-[01:51:47] AHK script paused via F8.
-[01:51:52] Anomaly detection paused (thread stopped).
-[01:51:52] — Anomaly type ranking —
-[01:51:52]                  Other  conf=0.62  dist=24
-[01:51:52]           Extra object  conf=0.56  dist=28
-[01:51:52]     Object Replacement  conf=0.56  dist=28
-[01:51:52]               Intruder  conf=0.55  dist=29
-[01:51:52]        Object Movement  conf=0.55  dist=29
-[01:51:52]              Dead body  conf=0.50  dist=32
-[01:51:52]          Image anomaly  conf=0.41  dist=38
-[01:51:52]           Door anomaly  conf=0.00  (no prior)
-[01:51:52]         Missing Object  conf=0.00  (no prior)
-[01:51:52]    Object Manipulation  conf=0.00  (no prior)
-[01:51:52] Known match within threshold: False
-[01:51:52] [cursor] long-press at anomaly coords (2459,774) for 2.00s
-[01:51:56] EasyOCR couldn't find 'Intruder' near cursor.
-[01:51:56] [cursor] open_dropdown_and_anchor: failed to find dropdown anchor
-[01:51:56] Failed to open dropdown / anchor; aborting selection for this label.
+[02:43:01] Automation started. Overlay hidden.
+[02:43:01] Mouse moved to top-left to reset position.
+[02:43:01] AHK script started.
+[02:43:02] Room: Yard – Detected 0 anomaly/anomalies.
+[02:43:08] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:43:14] Room: Living – Detected 1 anomaly/anomalies.
+[02:43:14] AHK script paused via F8.
+[02:43:19] Anomaly detection paused (thread stopped).
+[02:43:19] — Anomaly type ranking —
+[02:43:19]          Image anomaly  conf=0.97  dist=2
+[02:43:19]     Object Replacement  conf=0.66  dist=22
+[02:43:19]               Intruder  conf=0.64  dist=23
+[02:43:19]           Extra object  conf=0.62  dist=24
+[02:43:19]        Object Movement  conf=0.62  dist=24
+[02:43:19]                  Other  conf=0.58  dist=27
+[02:43:19]              Dead body  conf=0.50  dist=32
+[02:43:19]           Door anomaly  conf=0.00  (no prior)
+[02:43:19]         Missing Object  conf=0.00  (no prior)
+[02:43:19]    Object Manipulation  conf=0.00  (no prior)
+[02:43:19] Known match within threshold: True
+[02:43:19] [cursor] long-press at anomaly coords (2258,174) for 2.00s
+[02:43:24] Anchor via 'Intruder' at conf=1.00; top≈(2117,133) using Δ=290, nudge=12
+[02:43:24] [anchor] dropdown top-row anchor set to (2117, 133)
+[02:43:24] [cursor] hover 'Image anomaly' idx=4 step=60 → (2117,373) [anchor=(2117,133) screen=2560x1600]
+[02:43:32] [persist] signature saved: c0e094b4b3f8fbfd → Image anomaly
+[02:43:32] [persist] heatmap copied → c:\Users\sdzyr\Desktop\Project\odAI\LogCabin\classifications\Living\Image anomaly\Living_Painting2_20250824_024314_HEAT.png
+[02:43:35] AHK script restarted.
+[02:43:35] Mouse moved to top-left to reset position.
+[02:43:35] Anomaly detection resumed.
+[02:43:36] Room: Living – Detected 0 anomaly/anomalies.
+[02:43:42] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:43:48] Room: Bedroom – Detected 2 anomaly/anomalies.
+[02:43:48] AHK script paused via F8.
+[02:43:53] Anomaly detection paused (thread stopped).
+[02:43:53] — Anomaly type ranking —
+[02:43:53]               Intruder  conf=0.94  dist=4
+[02:43:53]     Object Replacement  conf=0.92  dist=5
+[02:43:53]        Object Movement  conf=0.64  dist=23
+[02:43:53]           Extra object  conf=0.62  dist=24
+[02:43:53]          Image anomaly  conf=0.58  dist=27
+[02:43:53]                  Other  conf=0.53  dist=30
+[02:43:53]              Dead body  conf=0.42  dist=37
+[02:43:53]           Door anomaly  conf=0.00  (no prior)
+[02:43:53]         Missing Object  conf=0.00  (no prior)
+[02:43:53]    Object Manipulation  conf=0.00  (no prior)
+[02:43:53] Known match within threshold: True
+[02:43:53] [cursor] long-press at anomaly coords (1637,521) for 2.00s
+[02:43:59] Anchor via 'Intruder' at conf=1.00; top≈(1549,234) using Δ=290, nudge=12
+[02:43:59] [anchor] dropdown top-row anchor set to (1549, 234)
+[02:43:59] [cursor] hover 'Intruder' idx=5 step=60 → (1549,534) [anchor=(1549,234) screen=2560x1600]
+[02:44:09] [cursor] re-open dropdown: long-press at (1637,521) for 2.00s
+[02:44:11] [cursor] hover 'Object Replacement' idx=9 step=60 → (1549,774) [anchor=(1549,234) screen=2560x1600]
+[02:44:19] [persist] signature saved: f8f0e8697074f1d7 → Object Replacement
+[02:44:19] [persist] heatmap copied → c:\Users\sdzyr\Desktop\Project\odAI\LogCabin\classifications\Bedroom\Object Replacement\Bedroom_Table2_20250824_024348_HEAT.png
+[02:44:22] AHK script restarted.
+[02:44:23] Mouse moved to top-left to reset position.
+[02:44:23] Anomaly detection resumed.
+[02:44:24] Room: Bedroom – Detected 0 anomaly/anomalies.
+[02:44:29] Room: Bathroom – Detected 0 anomaly/anomalies.
+[02:44:35] Room: Yard – Detected 0 anomaly/anomalies.
+[02:44:41] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:44:47] Room: Living – Detected 0 anomaly/anomalies.
+[02:44:53] Room: Bedroom – Detected 4 anomaly/anomalies.
+[02:44:53] AHK script paused via F8.
+[02:44:58] Anomaly detection paused (thread stopped).
+[02:44:58] — Anomaly type ranking —
+[02:44:58]               Intruder  conf=0.86  dist=9
+[02:44:58]     Object Replacement  conf=0.84  dist=10
+[02:44:58]        Object Movement  conf=0.69  dist=20
+[02:44:58]           Extra object  conf=0.59  dist=26
+[02:44:58]          Image anomaly  conf=0.59  dist=26
+[02:44:58]                  Other  conf=0.58  dist=27
+[02:44:58]              Dead body  conf=0.53  dist=30
+[02:44:58]           Door anomaly  conf=0.00  (no prior)
+[02:44:58]         Missing Object  conf=0.00  (no prior)
+[02:44:58]    Object Manipulation  conf=0.00  (no prior)
+[02:44:58] Known match within threshold: False
+[02:44:58] [cursor] long-press at anomaly coords (1716,499) for 2.00s
+[02:45:04] Anchor via 'Intruder' at conf=1.00; top≈(1608,182) using Δ=290, nudge=12
+[02:45:04] [anchor] dropdown top-row anchor set to (1608, 182)
+[02:45:04] [cursor] hover 'Intruder' idx=5 step=60 → (1608,482) [anchor=(1608,182) screen=2560x1600]
+[02:45:14] [cursor] re-open dropdown: long-press at (1716,499) for 2.00s
+[02:45:16] [cursor] hover 'Object Replacement' idx=9 step=60 → (1608,722) [anchor=(1608,182) screen=2560x1600]
+[02:45:26] [cursor] re-open dropdown: long-press at (1716,499) for 2.00s
+[02:45:29] [cursor] hover 'Object Movement' idx=8 step=60 → (1608,662) [anchor=(1608,182) screen=2560x1600]
+[02:45:39] [cursor] re-open dropdown: long-press at (1716,499) for 2.00s
+[02:45:42] [cursor] hover 'Extra object' idx=3 step=60 → (1608,362) [anchor=(1608,182) screen=2560x1600]
+[02:45:52] [cursor] re-open dropdown: long-press at (1716,499) for 2.00s
+[02:45:54] [cursor] hover 'Image anomaly' idx=4 step=60 → (1608,422) [anchor=(1608,182) screen=2560x1600]
+[02:46:04] [cursor] re-open dropdown: long-press at (1716,499) for 2.00s
+[02:46:07] [cursor] hover 'Other' idx=10 step=60 → (1608,782) [anchor=(1608,182) screen=2560x1600]
+[02:46:15] [persist] signature saved: f8eee9f97c70f1df → Other
+[02:46:15] [persist] heatmap copied → c:\Users\sdzyr\Desktop\Project\odAI\LogCabin\classifications\Bedroom\Other\Bedroom_Table2_20250824_024453_HEAT.png
+[02:46:18] AHK script restarted.
+[02:46:18] Mouse moved to top-left to reset position.
+[02:46:18] Anomaly detection resumed.
+[02:46:19] Room: Bedroom – Detected 1 anomaly/anomalies.
+[02:46:19] AHK script paused via F8.
+[02:46:24] Anomaly detection paused (thread stopped).
+[02:46:24] — Anomaly type ranking —
+[02:46:24]     Object Replacement  conf=0.95  dist=3
+[02:46:24]               Intruder  conf=0.64  dist=23
+[02:46:24]          Image anomaly  conf=0.62  dist=24
+[02:46:24]              Dead body  conf=0.62  dist=24
+[02:46:24]        Object Movement  conf=0.61  dist=25
+[02:46:24]           Extra object  conf=0.59  dist=26
+[02:46:24]                  Other  conf=0.59  dist=26
+[02:46:24]           Door anomaly  conf=0.00  (no prior)
+[02:46:24]         Missing Object  conf=0.00  (no prior)
+[02:46:24]    Object Manipulation  conf=0.00  (no prior)
+[02:46:24] Known match within threshold: True
+[02:46:24] [cursor] long-press at anomaly coords (1458,798) for 2.00s
+[02:46:34] EasyOCR couldn't find 'Intruder' near cursor.
+[02:46:34] [cursor] open_dropdown_and_anchor: failed to find dropdown anchor
+[02:46:34] Failed to open dropdown / anchor; aborting selection for this label.
+[02:46:45] [cursor] long-press at anomaly coords (1458,798) for 2.00s
+[02:47:23] Automation started. Overlay hidden.
+[02:47:23] Mouse moved to top-left to reset position.
+[02:47:23] AHK script started.
+[02:47:24] Room: Yard – Detected 0 anomaly/anomalies.
+[02:47:30] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:47:36] Room: Living – Detected 0 anomaly/anomalies.
+[02:47:42] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:47:48] Room: Bedroom – Detected 0 anomaly/anomalies.
+[02:47:54] Room: Bathroom – Detected 0 anomaly/anomalies.
+[02:48:00] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:48:06] Room: Living – Detected 0 anomaly/anomalies.
+[02:48:12] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:48:18] Room: Bedroom – Detected 0 anomaly/anomalies.
+[02:48:23] Room: Bathroom – Detected 0 anomaly/anomalies.
+[02:48:29] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:48:35] Room: Living – Detected 0 anomaly/anomalies.
+[02:48:41] Room: Kitchen – Detected 0 anomaly/anomalies.
+[02:48:47] Room: Bedroom – Detected 0 anomaly/anomalies.
+[02:48:53] Room: Bathroom – Detected 0 anomaly/anomalies.
+[02:48:59] Room: Entryway – Detected 0 anomaly/anomalies.
+[02:49:05] Room: Living – Detected 7 anomaly/anomalies.
+[02:49:05] AHK script paused via F8.
+[02:49:10] Anomaly detection paused (thread stopped).
+[02:49:11] — Anomaly type ranking —
+[02:49:11]        Object Movement  conf=0.61  dist=25
+[02:49:11]           Extra object  conf=0.59  dist=26
+[02:49:11]     Object Replacement  conf=0.59  dist=26
+[02:49:11]                  Other  conf=0.56  dist=28
+[02:49:11]              Dead body  conf=0.53  dist=30
+[02:49:11]          Image anomaly  conf=0.44  dist=36
+[02:49:11]               Intruder  conf=0.42  dist=37
+[02:49:11]           Door anomaly  conf=0.00  (no prior)
+[02:49:11]         Missing Object  conf=0.00  (no prior)
+[02:49:11]    Object Manipulation  conf=0.00  (no prior)
+[02:49:11] Known match within threshold: False
+[02:49:11] [cursor] long-press at anomaly coords (1646,339) for 2.00s
+[02:49:17] EasyOCR couldn't find 'Intruder' near cursor.
+[02:49:17] [cursor] open_dropdown_and_anchor: failed to find dropdown anchor
+[02:49:17] Failed to open dropdown / anchor; aborting selection for this label.
+[02:49:31] [cursor] long-press at anomaly coords (1646,339) for 2.00s
+[17:56:31] Overlay toggled to visible with F12.
+[17:56:32] Overlay toggled to hidden with F12.
+[17:59:08] Overlay toggled to visible with F12.
+[17:59:09] Automation started. Overlay hidden.
+[17:59:10] Mouse moved to top-left to reset position.
+[17:59:10] AHK script started.
+[17:59:11] Room: Yard – Detected 0 anomaly/anomalies.
+[17:59:17] Room: Entryway – Detected 0 anomaly/anomalies.
+[17:59:23] Room: Living – Detected 0 anomaly/anomalies.
+[17:59:29] Room: Kitchen – Detected 1 anomaly/anomalies.
+[17:59:29] AHK script paused via F8.
+[17:59:34] Anomaly detection paused (thread stopped).
+[17:59:34] — Anomaly type ranking —
+[17:59:34]                  Other  conf=0.86  dist=9
+[17:59:34]        Object Movement  conf=0.70  dist=19
+[17:59:34]           Extra object  conf=0.62  dist=24
+[17:59:34]     Object Replacement  conf=0.62  dist=24
+[17:59:34]          Image anomaly  conf=0.56  dist=28
+[17:59:34]               Intruder  conf=0.55  dist=29
+[17:59:34]              Dead body  conf=0.44  dist=36
+[17:59:34]           Door anomaly  conf=0.00  (no prior)
+[17:59:34]         Missing Object  conf=0.00  (no prior)
+[17:59:34]    Object Manipulation  conf=0.00  (no prior)
+[17:59:34] Known match within threshold: False
+[17:59:34] [cursor] long-press at anomaly coords (1103,1144) for 2.00s
+[17:59:40] Anchor via 'Intruder' at conf=1.00; top≈(1014,857) using Δ=290, nudge=12
+[17:59:40] [anchor] dropdown top-row anchor set to (1014, 857)
+[17:59:40] [cursor] hover 'Other' idx=10 step=60 → (1014,1457) [anchor=(1014,857) screen=2560x1600]
+[17:59:54] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[17:59:57] [cursor] hover 'Object Movement' idx=8 step=60 → (1014,1337) [anchor=(1014,857) screen=2560x1600]
+[18:00:11] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:00:14] [cursor] hover 'Extra object' idx=3 step=60 → (1014,1037) [anchor=(1014,857) screen=2560x1600]
+[18:00:24] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:00:27] [cursor] hover 'Object Replacement' idx=9 step=60 → (1014,1397) [anchor=(1014,857) screen=2560x1600]
+[18:00:37] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:00:40] [cursor] hover 'Image anomaly' idx=4 step=60 → (1014,1097) [anchor=(1014,857) screen=2560x1600]
+[18:00:51] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:00:53] [cursor] hover 'Intruder' idx=5 step=60 → (1014,1157) [anchor=(1014,857) screen=2560x1600]
+[18:01:04] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:01:07] [cursor] hover 'Dead body' idx=1 step=60 → (1014,917) [anchor=(1014,857) screen=2560x1600]
+[18:01:17] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:01:20] [cursor] hover 'Door anomaly' idx=2 step=60 → (1014,977) [anchor=(1014,857) screen=2560x1600]
+[18:01:31] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:01:33] [cursor] hover 'Missing Object' idx=6 step=60 → (1014,1217) [anchor=(1014,857) screen=2560x1600]
+[18:01:44] [cursor] re-open dropdown: long-press at (1103,1144) for 2.00s
+[18:01:47] [cursor] hover 'Object Manipulation' idx=7 step=60 → (1014,1277) [anchor=(1014,857) screen=2560x1600]
+[18:02:01] AHK script restarted.
+[18:02:01] Mouse moved to top-left to reset position.
+[18:02:01] Anomaly detection resumed.

@@ -184,7 +184,7 @@ class OverlayLight(QtWidgets.QWidget):
 
 
     def resume_detection(self):
-
+        time.sleep(3)
         """Restart AHK and resume the detector loop."""
         # Start AHK
         try:
@@ -303,7 +303,7 @@ class OverlayLight(QtWidgets.QWidget):
             self.appendLog(f"Error moving cursor to anomaly: {e}")
 
         # Small cushion (optional) before resuming
-        time.sleep(3)
+        
 
         self.resume_detection()
     def handle_error(self, error_msg):

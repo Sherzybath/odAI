@@ -119,14 +119,31 @@ baseline_regions = {
 
 def process_room(persist: bool | None = None):
     """
-    Capture screen, detect room, diff regions, save heatmaps.
-    If persist=False, saves to a temp dir and marks artifacts as transient
-    so they can be auto-removed after use.
-    Returns (room, anomalies, last_heatmap_path).
+    Capture screen, detect room, diff the known regions against the room template,
+    and save a WHITE-overlay heatmap plus its exact binary mask.
+
+    Returns:
+        (room_name: str | None, anomalies: list[dict], last_heatmap_path: str | None)
+
+    Each anomaly dict contains:
+        - class_name: str
+        - box: [x1, y1, x2, y2]
+        - pixel_count: int            # count of white pixels in mask
+        - heatmap_path: str           # path to saved overlay image (live + white)
+        - mask_path: str              # path to saved binary mask (0/255)
+        - bw_mask: np.ndarray         # in-memory binary mask (H×W, uint8)
+        - baseline: np.ndarray        # template crop (BGR)
+        - current:  np.ndarray        # live crop (BGR)
+        - transient: bool             # true if written to a temp dir
+        - transient_root: str | None  # the temp dir root to allow cleanup
     """
+    import tempfile
+    from datetime import datetime
+
     if persist is None:
         persist = DEBUG_PERSIST
 
+    # 1) Capture + room detection
     time.sleep(0.2)
     img = capture_screen()
     room = detect_room_name(img)
@@ -134,50 +151,73 @@ def process_room(persist: bool | None = None):
     if not room or tpl_img is None:
         return None, [], None
 
-    # Choose output dir
+    # 2) Choose output directory
     if persist:
         heat_dir = os.path.join(BASE_DIR, room, HEATMAP_SUBFOLDER)
+        os.makedirs(heat_dir, exist_ok=True)
+        transient_root = None
     else:
-        # temp dir for ephemeral artifacts
+        # ephemeral artifacts; caller can clean via _cleanup_transient_artifacts
         heat_dir = tempfile.mkdtemp(prefix=f"{room}_heatmaps_tmp_", dir=os.path.join(BASE_DIR, room))
-    os.makedirs(heat_dir, exist_ok=True)
+        transient_root = heat_dir
+        os.makedirs(heat_dir, exist_ok=True)
 
     anomalies = []
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     last_heat_path = None
 
-    for region in baseline_regions[room]:
+    # 3) Iterate known regions and compute abs-diff mask
+    for region in baseline_regions.get(room, []):
         cls = region["class_name"]
         x1, y1, x2, y2 = map(int, region["box"])
+
         live_crop = img[y1:y2, x1:x2]
         tpl_crop  = tpl_img[y1:y2, x1:x2]
+        if live_crop.size == 0 or tpl_crop.size == 0:
+            continue
 
+        # abs-diff → grayscale → binary mask
         diff = cv2.absdiff(live_crop, tpl_crop)
         gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        # (optional) light blur helps stabilize noise; keep small to preserve edges
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
         _, binm = cv2.threshold(gray, BINARY_THRESH, 255, cv2.THRESH_BINARY)
+
         pix_count = int(np.count_nonzero(binm))
+        if pix_count <= PIXEL_COUNT_THRESHOLD:
+            continue
 
-        if pix_count > PIXEL_COUNT_THRESHOLD:
-            heat = cv2.applyColorMap(binm, cv2.COLORMAP_JET)
-            overlay = cv2.addWeighted(live_crop, 0.7, heat, 0.5, 0)
-            fname = f"{room}_{cls}_{ts}_HEAT.png"
-            heat_path = os.path.join(heat_dir, fname)
-            cv2.imwrite(heat_path, overlay)
-            last_heat_path = heat_path
+        # 4) Build WHITE overlay (live + white mask)
+        white_bgr = cv2.cvtColor(binm, cv2.COLOR_GRAY2BGR)
+        overlay = cv2.addWeighted(live_crop, 0.7, white_bgr, 0.5, 0)
 
-            anomalies.append({
-    "class_name": cls,
-    "box": region["box"],
-    "pixel_count": pix_count,
-    "heatmap_path": heat_path,
-    "baseline": tpl_crop,           # <— add
-    "current":  live_crop,          # <— add
-    "transient": not persist,
-    "transient_root": heat_dir if not persist else None
-})
+        # 5) Persist overlay and the raw mask
+        base = f"{room}_{cls}_{ts}"
+        heat_path = os.path.join(heat_dir, f"{base}_HEAT.png")
+        mask_path = os.path.join(heat_dir, f"{base}_MASK.png")
 
+        cv2.imwrite(heat_path, overlay)
+        cv2.imwrite(mask_path, binm)
+
+        last_heat_path = heat_path
+
+        # 6) Collect anomaly record (keep mask + crops in memory too)
+        anomalies.append({
+            "class_name": cls,
+            "box": region["box"],
+            "pixel_count": pix_count,
+            "heatmap_path": heat_path,
+            "mask_path": mask_path,
+            "bw_mask": binm.copy(),     # for direct centroiding
+            "baseline": tpl_crop,       # template crop (BGR)
+            "current":  live_crop,      # live crop (BGR)
+            "transient": not persist,
+            "transient_root": transient_root
+        })
 
     return room, anomalies, last_heat_path
+
+
 def save_classification_signature(signature: str, anomaly_type: str):
     classification_map[signature] = anomaly_type
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -232,177 +272,152 @@ def _cleanup_transient_artifacts(anomalies):
 
 
 def convert_to_black_white_fullsize(
-    heatmap_path,
+    heatmap_path: str,
     box=None,
-    debug_dir=None,
-    debug_name=None,
+    debug_dir: str | None = None,
+    debug_name: str | None = None,
     *,
+    precomputed_mask: np.ndarray | None = None,
     baseline_bgr: np.ndarray | None = None,
     current_bgr:  np.ndarray | None = None,
-    diff_blur_ksize: int = 3,     # was 5 → smaller to keep edges
-    diff_thresh: int | str = "auto",  # 35 → "auto" (Otsu/percentile); or an int (e.g., 18–28)
-    morph_open: int = 1,          # opening iterations
-    morph_close: int = 2,         # closing iterations
-    min_white_frac: float = 0.0002,   # if mask too sparse, we’ll gently dilate
-    max_white_frac: float = 0.25,     # if mask too dense, we’ll erode
-    assist_hsv: bool = True,      # fuse a weak HSV mask when diff is too sparse
+    diff_blur_ksize: int = 3,
+    diff_thresh: int | str = "auto",
+    morph_open: int = 1,
+    morph_close: int = 2,
+    min_white_frac: float = 2e-4,
+    max_white_frac: float = 0.25,
 ):
-    """
-    Returns (bw_mask, used_bgr, offset_xy).
-    If baseline/current are provided, prefers abs-diff path with adaptive threshold.
-    Otherwise falls back to HSV/chan heuristic.
+    def _dump(tag: str, mat: np.ndarray):
+        if not (DEBUG_PERSIST and debug_dir):
+            return
+        os.makedirs(debug_dir, exist_ok=True)
+        nm = debug_name or os.path.basename(heatmap_path)
+        cv2.imwrite(os.path.join(debug_dir, f"{tag}_{nm}"), mat)
 
-    Heuristics guardrails:
-      - If result too sparse -> dilate a bit
-      - If too dense         -> erode a bit
-    """
-    img_full = cv2.imread(heatmap_path)
-    if img_full is None:
-        print(f"[ERROR] Unable to read heatmap: {heatmap_path}")
-        return None, None, (0, 0)
-
-    Hf, Wf = img_full.shape[:2]
+    # --- compute region offset ONCE ---
     x_off = y_off = 0
-
-    # region selection
     if box is not None and len(box) == 4:
         x1, y1, x2, y2 = map(int, box)
-        ix1 = max(0, min(Wf, x1)); iy1 = max(0, min(Hf, y1))
-        ix2 = max(0, min(Wf, x2)); iy2 = max(0, min(Hf, y2))
-        if ix2 > ix1 and iy2 > iy1:
-            used = img_full[iy1:iy2, ix1:ix2]
-            x_off, y_off = x1, y1
+        x_off, y_off = x1, y1
+
+    # --- 0) precomputed mask path ---
+    if precomputed_mask is not None:
+        bw = precomputed_mask
+        _dump("MASK_FROM_CALLER", bw)
+
+        # Provide a visual counterpart for debug panes
+        if current_bgr is not None:
+            used_bgr = current_bgr
         else:
-            print(f"[WARN] Box collapses after clamp ({box}) on {os.path.basename(heatmap_path)}; using full heatmap")
-            used = img_full
-            x_off, y_off = x1, y1
-    else:
-        used = img_full
+            used_full = cv2.imread(heatmap_path)
+            if used_full is not None and box is not None and len(box) == 4:
+                x1, y1, x2, y2 = map(int, box)
+                Hf, Wf = used_full.shape[:2]
+                ix1 = max(0, min(Wf, x1)); iy1 = max(0, min(Hf, y1))
+                ix2 = max(0, min(Wf, x2)); iy2 = max(0, min(Hf, y2))
+                used_bgr = used_full[iy1:iy2, ix1:ix2] if (ix2 > ix1 and iy2 > iy1) else used_full
+            else:
+                used_bgr = used_full  # may be None; that's okay
 
-    # handy debug helper
-    def _dump(name, mat):
-        if DEBUG_PERSIST and debug_dir:
-            try:
-                os.makedirs(debug_dir, exist_ok=True)
-                nm = debug_name or os.path.basename(heatmap_path)
-                cv2.imwrite(os.path.join(debug_dir, f"{name}_{nm}"), mat)
-            except Exception as e:
-                print(f"[debug save] {e}")
+        # IMPORTANT: return the REAL offset, not (0,0)
+        return bw, used_bgr, (x_off, y_off)
 
-    # ----------------------------
-    # Preferred path: ABS-DIFF
-    # ----------------------------
+    # --- determine region offset if a box was provided ---
+    x_off = y_off = 0
+    if box is not None and len(box) == 4:
+        x1, y1, x2, y2 = map(int, box)
+        x_off, y_off = x1, y1
+
+    # --- 1) Preferred: abs-diff if baseline/current are available ---
     if baseline_bgr is not None and current_bgr is not None:
         try:
-            # size match
-            bh, bw = baseline_bgr.shape[:2]; ch, cw = current_bgr.shape[:2]
-            if (bh, bw) != (ch, cw):
-                target = (used.shape[1], used.shape[0])
-                baseline = cv2.resize(baseline_bgr, target, interpolation=cv2.INTER_AREA)
-                current  = cv2.resize(current_bgr,  target, interpolation=cv2.INTER_AREA)
-            else:
-                baseline, current = baseline_bgr, current_bgr
+            base = baseline_bgr
+            curr = current_bgr
 
-            base_g = cv2.cvtColor(baseline, cv2.COLOR_BGR2GRAY)
-            curr_g = cv2.cvtColor(current,  cv2.COLOR_BGR2GRAY)
+            # size match to each other (they should already be same in your pipeline)
+            if base.shape[:2] != curr.shape[:2]:
+                target = (curr.shape[1], curr.shape[0])
+                base = cv2.resize(base, target, interpolation=cv2.INTER_AREA)
 
-            # Improve contrast a bit (CLAHE)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            base_g = clahe.apply(base_g)
-            curr_g = clahe.apply(curr_g)
+            base_g = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
+            curr_g = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY)
 
-            # Gentle blur
-            k = max(1, int(diff_blur_ksize)); k = k + 1 if k % 2 == 0 else k
+            # light blur to suppress sensor/game noise
+            k = max(1, int(diff_blur_ksize))
+            if k % 2 == 0:
+                k += 1
             base_g = cv2.GaussianBlur(base_g, (k, k), 0)
             curr_g = cv2.GaussianBlur(curr_g, (k, k), 0)
 
             diff = cv2.absdiff(base_g, curr_g)
             _dump("D0_DIFF", diff)
 
-            # Threshold
             if isinstance(diff_thresh, str) and diff_thresh.lower() == "auto":
-                # Try Otsu; if too low, fallback to percentile
-                _th_val, bw = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-                if _th_val < 12:  # very low → likely flat image; pick percentile
-                    p = np.percentile(diff, 85)  # 80–90 is a good range
-                    tval = max(8, min(64, int(p)))
-                    _, bw = cv2.threshold(diff, tval, 255, cv2.THRESH_BINARY)
+                # Otsu first
+                tval, bw = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                # fall back to a percentile if Otsu is too low (very flat images)
+                if tval < 12:
+                    p = np.percentile(diff, 85)  # 80–90 works well; adjust if needed
+                    t = max(8, min(64, int(p)))
+                    _, bw = cv2.threshold(diff, t, 255, cv2.THRESH_BINARY)
             else:
-                tval = int(diff_thresh)
-                _, bw = cv2.threshold(diff, tval, 255, cv2.THRESH_BINARY)
+                t = int(diff_thresh)
+                _, bw = cv2.threshold(diff, t, 255, cv2.THRESH_BINARY)
 
             _dump("D1_THRESH", bw)
 
-            # Morphology (opening small specks, closing small gaps)
-            k3 = np.ones((3,3), np.uint8)
+            # morphology
+            k3 = np.ones((3, 3), np.uint8)
             if morph_open > 0:
                 bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, k3, iterations=morph_open)
             if morph_close > 0:
                 bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k3, iterations=morph_close)
 
-            # Density guardrails
+            # guardrails
             frac = float(cv2.countNonZero(bw)) / float(bw.size)
             if frac < min_white_frac:
-                # too sparse → dilate a touch
-                bw = cv2.dilate(bw, np.ones((3,3), np.uint8), iterations=1)
+                bw = cv2.dilate(bw, k3, iterations=1)
                 _dump("D2_DILATE_SPARSE", bw)
             elif frac > max_white_frac:
-                # too dense → erode a touch
-                bw = cv2.erode(bw, np.ones((3,3), np.uint8), iterations=1)
+                bw = cv2.erode(bw, k3, iterations=1)
                 _dump("D2_ERODE_DENSE", bw)
 
-            # If still too sparse and allowed, blend in a weak HSV assist
-            if assist_hsv:
-                frac = float(cv2.countNonZero(bw)) / float(bw.size)
-                if frac < min_white_frac * 0.75:
-                    hsv = cv2.cvtColor(current, cv2.COLOR_BGR2HSV)
-                    mask_red  = cv2.inRange(hsv, (0,40,40), (10,255,255)) | cv2.inRange(hsv, (160,40,40), (180,255,255))
-                    mask_warm = cv2.inRange(hsv, (10,30,30), (40,255,255))
-                    assist = cv2.bitwise_or(mask_red, mask_warm)
-                    assist = cv2.medianBlur(assist, 3)
-                    bw = cv2.bitwise_or(bw, assist)
-                    _dump("D3_ASSIST", bw)
-
-            _dump("D4_FINAL", bw)
-            return bw, current, (x_off, y_off)
+            _dump("D3_FINAL", bw)
+            return bw, curr, (x_off, y_off)
 
         except Exception as e:
-            print(f"[WARN] absdiff path failed, falling back to HSV heuristic: {e}")
+            print(f"[WARN] absdiff path failed, will try fallback: {e}")
 
-    # ----------------------------
-    # Fallback: HSV heuristic (tightened)
-    # ----------------------------
-    hsv = cv2.cvtColor(used, cv2.COLOR_BGR2HSV)
-    mask_red  = cv2.inRange(hsv, (0,40,40), (10,255,255)) | cv2.inRange(hsv, (160,40,40), (180,255,255))
-    mask_warm = cv2.inRange(hsv, (10,35,35), (38,255,255))   # slightly tighter upper hue
-    b, g, r = cv2.split(used)
-    mask_r = (r.astype(np.int16) - np.maximum(g, b).astype(np.int16)) > 18
-    mask_y = (r > 145) & (g > 125) & (b < 175)
-    mask_chan = (mask_r | mask_y).astype(np.uint8) * 255
+    # --- 2) Fallback: try to recover white from the saved heatmap image ---
+    # Your new heatmaps are live_crop with white painted where diff==1,
+    # so a bright-threshold usually isolates the change.
+    img_full = cv2.imread(heatmap_path)
+    if img_full is None:
+        print(f"[ERROR] Unable to read heatmap: {heatmap_path}")
+        return None, None, (0, 0)
 
-    bw = cv2.bitwise_or(mask_red | mask_warm, mask_chan)
+    used = img_full
+    if box is not None and len(box) == 4:
+        x1, y1, x2, y2 = map(int, box)
+        Hf, Wf = img_full.shape[:2]
+        ix1 = max(0, min(Wf, x1)); iy1 = max(0, min(Hf, y1))
+        ix2 = max(0, min(Wf, x2)); iy2 = max(0, min(Hf, y2))
+        if ix2 > ix1 and iy2 > iy1:
+            used = img_full[iy1:iy2, ix1:ix2]
 
-    # less aggressive "not_blue" (optional): comment out if it over-selects
-    # h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    # not_blue = ((h < 85) | (h > 135)) & (s >= 40) & (v >= 45)
-    # bw = cv2.bitwise_or(bw, not_blue.astype(np.uint8) * 255)
+    gray = cv2.cvtColor(used, cv2.COLOR_BGR2GRAY)
+    # bright-threshold; use Otsu then clamp to high side
+    t_otsu, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    t = max(t_otsu, 200)  # ensure we really pick only bright whites
+    _, bw = cv2.threshold(gray, t, 255, cv2.THRESH_BINARY)
 
-    bw = cv2.medianBlur(bw, 3)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=1)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8), iterations=2)
+    # small tidy
+    k3 = np.ones((3, 3), np.uint8)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, k3, iterations=1)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k3, iterations=1)
 
-    # Guardrails again
-    frac = float(cv2.countNonZero(bw)) / float(bw.size)
-    if frac < min_white_frac:
-        bw = cv2.dilate(bw, np.ones((3,3), np.uint8), iterations=1)
-        _dump("H1_DILATE_SPARSE", bw)
-    elif frac > max_white_frac:
-        bw = cv2.erode(bw, np.ones((3,3), np.uint8), iterations=1)
-        _dump("H1_ERODE_DENSE", bw)
-
-    _dump("H_FINAL", bw)
+    _dump("FALLBACK_FINAL", bw)
     return bw, used, (x_off, y_off)
-
 
 
 def _centroid_from_mask(bw: np.ndarray, *, try_merge=True):
@@ -482,15 +497,15 @@ def get_anomaly_coordinates(anomalies, debug_dir="debug_selected", persist: bool
         print(f"[DEBUG] Processing: {heatmap_path}")
 
         bw, used_bgr, (x_off, y_off) = convert_to_black_white_fullsize(
-    heatmap_path,
+    heatmap_path=heatmap_path,          # <-- use the resolved variable, not a["heatmap_path"]
     box=box,
+    precomputed_mask=a.get("bw_mask"),  # fastest path
+    baseline_bgr=a.get("baseline"),
+    current_bgr=a.get("current"),
     debug_dir=local_debug_dir,
     debug_name=os.path.basename(heatmap_path),
-    baseline_bgr=a.get("baseline"),   # <— pass along
-    current_bgr=a.get("current")      # <— pass along
 )
-
-        if bw is None or used_bgr is None:
+        if bw is None:
             continue
 
         res = _centroid_from_mask(bw, try_merge=True)

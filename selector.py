@@ -14,6 +14,7 @@ from backend import (
     ANOMALY_POSITIONS,
 )
 import time 
+from logic_ranker import rank_labels_for_anomaly
 
 try:
     from backend import read_center_status as _backend_read_center_status
@@ -201,6 +202,7 @@ def _rank_labels_for_heatmap(heatmap_path: str,
       ranked_details: list of dicts sorted best→worst like:
         [{"label": str, "distance": int or None, "confidence": float in [0,1]}]
     """
+
     sig = _dhash_signature(heatmap_path)
     if sig is None:
         # No signature -> fall back to default order with zero confidence
