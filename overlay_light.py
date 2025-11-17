@@ -164,7 +164,6 @@ class OverlayLight(QtWidgets.QWidget):
 
     def pause_detection(self):
 
-        # Stop AHK
         try:
             keyboard.press_and_release("f8")
             self.appendLog("AHK script paused via F8.")
@@ -184,7 +183,7 @@ class OverlayLight(QtWidgets.QWidget):
 
 
     def resume_detection(self):
-        time.sleep(3)
+        time.sleep(3.3)
         """Restart AHK and resume the detector loop."""
         # Start AHK
         try:

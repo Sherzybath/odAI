@@ -1,45 +1,24 @@
-import os, json, cv2, numpy as np
-from typing import Dict, List, Tuple, Optional
+# anomaly_logic_ranker.py
+import os
+import cv2
+import numpy as np
+from typing import List, Dict, Tuple, Optional
+import json  # <-- add this near the top with other imports
 
-# ---- anomaly label universe (keep in sync with your dropdown) ----
-ANOMALY_LABELS = [
-    "Dead Body",
-    "Door Anomaly",
-    "Extra Object",
-    "Image Anomaly",
-    "Intruder",
-    "Missing Object",
-    "Object Manipulation",
-    "Object Movement",
-    "Object Replacement",
-    "Other",
-]
+# If you have the global list in backend, you can import it; otherwise define a default:
+try:
+    from backend import ANOMALY_POSITIONS  # for canonical ordering / available labels
+    DEFAULT_LABEL_ORDER = list(ANOMALY_POSITIONS.keys())
+except Exception:
+    DEFAULT_LABEL_ORDER = [
+        "Dead Body", "Door Anomaly", "Extra Object", "Image Anomaly", "Intruder",
+        "Missing Object", "Object Manipulation", "Object Movement", "Object Replacement",
+        "Other",
+    ]
+# COMPARISON
+BASE_DIR = os.path.join(os.path.dirname(__file__), "LogCabin")
+CLASSIFICATION_MAP = os.path.join(BASE_DIR, "classification_map.json")
 
-# ---- priors by region name (class_name in your template regions) ----
-# feel free to add more keys from your dataset: "painting", "shelf", "table", "door", "wall", "floor", ...
-REGION_PRIORS: Dict[str, Dict[str, float]] = {
-    "frame":            {"Image Anomaly": 0.65, "Object Replacement": 0.15, "Other": 0.10, "Object Movement": 0.10},
-    "painting":         {"Image Anomaly": 0.60, "Object Replacement": 0.20, "Other": 0.10, "Object Movement": 0.10},
-    "door":             {"Door Anomaly": 0.65, "Object Movement": 0.20, "Other": 0.15},
-    "table":            {"Extra Object": 0.40, "Missing Object": 0.25, "Object Manipulation": 0.20, "Object Movement": 0.15},
-    "shelf":            {"Extra Object": 0.45, "Missing Object": 0.30, "Object Manipulation": 0.15, "Other": 0.10},
-    "floor":            {"Intruder": 0.30, "Extra Object": 0.30, "Object Movement": 0.25, "Other": 0.15},
-    "wall":             {"Image Anomaly": 0.35, "Other": 0.25, "Object Replacement": 0.20, "Object Movement": 0.20},
-}
-
-# default priors if region unknown
-DEFAULT_REGION_PRIOR = {"Other": 0.34, "Extra Object": 0.22, "Object Movement": 0.22, "Image Anomaly": 0.22}
-
-# ---- weights for each signal (sum roughly ~1; tune freely) ----
-WEIGHTS = {
-    "signature": 0.35,   # dhash distance → similarity
-    "region":    0.20,   # region prior
-    "shape":     0.20,   # area/AR/solidity
-    "temporal":  0.15,   # persistence vs spike
-    "colorish":  0.10,   # uniformity / warm hues bias
-}
-
-# ---- utilities ----------------------------------------------------
 
 def _dhash_signature(image_path: str) -> Optional[str]:
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -53,209 +32,305 @@ def _dhash_signature(image_path: str) -> Optional[str]:
         val = (val << 1) | int(bool(b))
     return f"{val:016x}"
 
+
 def _hamming(a: str, b: str) -> int:
     return bin(int(a, 16) ^ int(b, 16)).count("1")
 
-def _load_map(classification_map_path: str) -> Dict[str, str]:
-    if not os.path.exists(classification_map_path):
+
+def _load_map() -> Dict[str, str]:
+    if not os.path.exists(CLASSIFICATION_MAP):
         return {}
     try:
-        with open(classification_map_path, "r") as f:
+        with open(CLASSIFICATION_MAP, "r") as f:
             return json.load(f)
     except Exception:
         return {}
 
-def _signature_scores(heatmap_path: str, classification_map_path: str, distance_cap: int = 64) -> Dict[str, float]:
-    """return per-label similarity score in [0,1] derived from dhash nearest distances"""
-    sig = _dhash_signature(heatmap_path)
-    if sig is None:
-        return {lbl: 0.0 for lbl in ANOMALY_LABELS}
 
-    mapping = _load_map(classification_map_path)
-    if not mapping:
-        return {lbl: 0.0 for lbl in ANOMALY_LABELS}
+# -----------------------------
+# Utilities
+# -----------------------------
+def _component_stats(mask: np.ndarray):
+    """Return connected components info and some convenient aggregates."""
+    if mask is None or mask.size == 0:
+        return dict(count=0, area_frac=0.0, largest_area_frac=0.0,
+                    bbox_frac=0.0, aspect_ratio=0.0, centroid=(None, None))
 
-    # collect min distance per label
-    best_per_label: Dict[str, int] = {}
-    for known_sig, label in mapping.items():
-        d = _hamming(sig, known_sig)
-        cur = best_per_label.get(label)
-        if cur is None or d < cur:
-            best_per_label[label] = d
+    H, W = mask.shape[:2]
+    area_img = float(H * W)
 
-    scores = {lbl: 0.0 for lbl in ANOMALY_LABELS}
-    for lbl, d in best_per_label.items():
-        d_cap = min(d, distance_cap)
-        scores[lbl] = max(0.0, 1.0 - (d_cap / float(distance_cap)))
-    return scores
-
-def _region_prior(region_name: str) -> Dict[str, float]:
-    if not region_name:
-        return DEFAULT_REGION_PRIOR
-    r = region_name.lower()
-    # choose best matching prior by substring
-    for key in REGION_PRIORS:
-        if key in r:
-            return REGION_PRIORS[key]
-    return DEFAULT_REGION_PRIOR
-
-def _mask_features(bw: np.ndarray) -> Dict[str, float]:
-    """extract simple shape/area features from mask"""
-    H, W = bw.shape[:2]
-    area_frac = float(cv2.countNonZero(bw)) / float(H * W + 1e-6)
-
-    # largest component properties
-    num, labels, stats, cents = cv2.connectedComponentsWithStats(bw, connectivity=8)
+    num, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if num <= 1:
-        return {"area": area_frac, "ar": 1.0, "sol": 0.0}
+        return dict(count=0, area_frac=0.0, largest_area_frac=0.0,
+                    bbox_frac=0.0, aspect_ratio=0.0, centroid=(None, None))
 
-    idx = np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1
-    x, y, w, h, a = stats[idx]
-    ar = (h + 1e-6) / (w + 1e-6) if w > 0 else 1.0  # tall vs wide
-    # solidity: area / convexArea approx via hull on contour
-    comp = np.zeros_like(bw)
-    comp[labels == idx] = 255
-    contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    sol = 0.0
-    if contours:
-        hull = cv2.convexHull(contours[0])
-        hull_area = cv2.contourArea(hull)
-        if hull_area > 0:
-            sol = float(a) / float(hull_area)
-    return {"area": area_frac, "ar": float(ar), "sol": float(sol)}
+    # drop background (0)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    xs, ys, ws, hs = stats[1:, 0], stats[1:, 1], stats[1:, 2], stats[1:, 3]
+    bbox_areas = (ws * hs).astype(np.float32)
 
-def _shape_scores(feat: Dict[str, float]) -> Dict[str, float]:
+    total_white = float((mask > 0).sum())
+    area_frac = total_white / area_img
+
+    i_max = int(np.argmax(areas))
+    largest_area = float(areas[i_max])
+    largest_area_frac = largest_area / area_img
+
+    # Largest component bbox stats
+    wL, hL = float(ws[i_max]), float(hs[i_max])
+    bbox_frac = (wL * hL) / area_img if area_img > 0 else 0.0
+    aspect_ratio = (hL / wL) if wL > 1 else 0.0
+
+    cx, cy = cents[i_max]
+    centroid = (float(cx) / W, float(cy) / H)  # normalized [0..1]
+
+    return dict(
+        count=int(len(areas)),
+        area_frac=float(area_frac),
+        largest_area_frac=float(largest_area_frac),
+        bbox_frac=float(bbox_frac),
+        aspect_ratio=float(aspect_ratio),
+        centroid=centroid,
+    )
+
+def _signed_intensity_shift(baseline_bgr: Optional[np.ndarray],
+                            current_bgr:  Optional[np.ndarray]) -> float:
     """
-    heuristic mapping:
-      - Intruder: larger area, tall-ish blob, decent solidity
-      - Image Anomaly: moderate-to-large area, fairly solid, often rectangular-ish (solidity high)
-      - Extra Object: small-to-moderate area, compact (solidity high)
-      - Object Movement: very small area OR thin edges → low solidity
-      - Missing Object: can be tricky; if area moderate but irregular, give light credit
+    Mean signed change (curr - base) in grayscale. Positive => got brighter (often 'Extra Object'),
+    Negative => got darker/missing (often 'Missing Object'). 0 when not available.
     """
-    area = feat["area"]       # 0..1
-    ar   = feat["ar"]         # tall if > 1, wide if < 1
-    sol  = feat["sol"]        # 0..1
-
-    s = {lbl: 0.0 for lbl in ANOMALY_LABELS}
-
-    # Intruder
-    s["Intruder"] = np.clip((area - 0.008) * 40.0, 0, 1) * np.clip((ar - 0.8), 0, 1) * np.clip((sol - 0.4) * 2.0, 0, 1)
-
-    # Image Anomaly
-    s["Image Anomaly"] = np.clip((area - 0.004) * 35.0, 0, 1) * np.clip((sol - 0.5) * 2.0, 0, 1)
-
-    # Extra Object
-    s["Extra Object"] = np.clip(0.012 - area, 0, 0.012) / 0.012 * np.clip((sol - 0.4) * 2.0, 0, 1)
-
-    # Object Movement (thin/edgey/small)
-    s["Object Movement"] = np.clip(0.006 - area, 0, 0.006) / 0.006 * np.clip(0.6 - sol, 0, 0.6) / 0.6
-
-    # Missing Object (weak heuristic)
-    s["Missing Object"] = np.clip((0.02 - area), 0, 0.02) / 0.02 * np.clip((0.7 - sol), 0, 0.7) / 0.7 * 0.6
-
-    # door anomaly – penalize unless region prior pushes it
-    s["Door Anomaly"] = 0.1 * np.clip((area - 0.003) * 50.0, 0, 1)
-
-    # object manipulation / replacement – light signals
-    s["Object Manipulation"] = 0.25 * np.clip((area - 0.003) * 40.0, 0, 1)
-    s["Object Replacement"]  = 0.25 * np.clip((area - 0.003) * 40.0, 0, 1)
-
-    # other
-    s["Other"] = 0.1
-    return s
-
-def _temporal_scores(history_flags: List[bool]) -> Dict[str, float]:
-    """
-    history_flags: e.g., last N polls where this region was 'hot' (True) vs 'cold' (False)
-    persistent (many Trues) → Image/Missing/Manipulation
-    spiky (few Trues) → Movement/Extra
-    """
-    if not history_flags:
-        persist = 0.0
-    else:
-        persist = sum(history_flags) / float(len(history_flags))
-    s = {lbl: 0.0 for lbl in ANOMALY_LABELS}
-    s["Image Anomaly"] = persist
-    s["Missing Object"] = persist * 0.8
-    s["Object Manipulation"] = persist * 0.7
-    s["Object Movement"] = (1.0 - persist) * 0.8
-    s["Extra Object"] = (1.0 - persist) * 0.5
-    s["Intruder"] = persist * 0.3  # intruder can persist but often appears suddenly
-    s["Other"] = 0.2
-    return s
-
-def _colorish_scores(current_bgr: Optional[np.ndarray], baseline_bgr: Optional[np.ndarray]) -> Dict[str, float]:
-    """
-    quick uniformity measure: std of absdiff; lower std + higher mean → uniform patch (Image Anomaly)
-    """
-    s = {lbl: 0.0 for lbl in ANOMALY_LABELS}
-    if current_bgr is None or baseline_bgr is None:
-        return s
+    if baseline_bgr is None or current_bgr is None:
+        return 0.0
     base_g = cv2.cvtColor(baseline_bgr, cv2.COLOR_BGR2GRAY)
     curr_g = cv2.cvtColor(current_bgr,  cv2.COLOR_BGR2GRAY)
-    diff = cv2.absdiff(base_g, curr_g).astype(np.float32)
-    mean = float(diff.mean())
-    std  = float(diff.std()) + 1e-6
-    uniformity = np.clip(mean / (std * 6.0), 0.0, 1.0)  # bigger when mean>>std
-    s["Image Anomaly"] = uniformity
-    s["Object Movement"] = 1.0 - uniformity
-    return s
+    if base_g.shape != curr_g.shape:
+        target = (curr_g.shape[1], curr_g.shape[0])
+        base_g = cv2.resize(base_g, target, interpolation=cv2.INTER_AREA)
+    return float(curr_g.astype(np.int16).mean() - base_g.astype(np.int16).mean())
 
-# ---- public API ---------------------------------------------------
+def _edge_delta(baseline_bgr: Optional[np.ndarray],
+                current_bgr:  Optional[np.ndarray]) -> float:
+    """How much edge energy changed (Canny). Larger can imply 'Image Anomaly' or 'Replacement'."""
+    if baseline_bgr is None or current_bgr is None:
+        return 0.0
+    base_g = cv2.cvtColor(baseline_bgr, cv2.COLOR_BGR2GRAY)
+    curr_g = cv2.cvtColor(current_bgr,  cv2.COLOR_BGR2GRAY)
+    if base_g.shape != curr_g.shape:
+        target = (curr_g.shape[1], curr_g.shape[0])
+        base_g = cv2.resize(base_g, target, interpolation=cv2.INTER_AREA)
+    e0 = cv2.Canny(base_g, 50, 120).mean()
+    e1 = cv2.Canny(curr_g, 50, 120).mean()
+    return float(abs(e1 - e0))
 
-def rank_labels_for_anomaly(
-    *,
+def _normalize_scores(scores: Dict[str, float]) -> Dict[str, float]:
+    vals = np.array([max(0.0, v) for v in scores.values()], dtype=np.float32)
+    s = float(vals.sum())
+    if s <= 1e-8:
+        # fallback: uniform small probability
+        n = max(1, len(vals))
+        return {k: 1.0 / n for k in scores.keys()}
+    return {k: float(v) / s for k, v in scores.items()}
+
+# -----------------------------
+# Heuristic label scoring
+# -----------------------------
+def _score_labels(mask_stats: dict,
+                  signed_shift: float,
+                  edge_change: float,
+                  room: Optional[str],
+                  labels: List[str]) -> Dict[str, float]:
+    """
+    Produce a raw score per label using simple, explainable heuristics.
+    You can tune these safely at runtime.
+    """
+    area = mask_stats["area_frac"]           # fraction of region marked as change
+    largest = mask_stats["largest_area_frac"]
+    bboxf = mask_stats["bbox_frac"]
+    ar    = mask_stats["aspect_ratio"]       # H/W of largest component
+    count = mask_stats["count"]
+    cx, cy = mask_stats["centroid"]
+
+    scores = {lab: 0.0 for lab in labels}
+
+    # --- Intruder ---
+    # One tall-ish blob, moderate area, often around mid frame
+    if "Intruder" in scores:
+        s = 0.0
+        if 0.012 <= largest <= 0.25:
+            s += 1.0
+        if ar >= 1.6:
+            s += 0.8
+        if count <= 3:
+            s += 0.4
+        scores["Intruder"] = s
+
+    # --- Extra Object ---
+    # New compact bright blob, small-to-moderate area, positive brightening
+    if "Extra Object" in scores:
+        s = 0.0
+        if 0.003 <= largest <= 0.05:
+            s += 0.9
+        if signed_shift > 2.0:   # brighter
+            s += 0.7
+        if count <= 6:
+            s += 0.2
+        scores["Extra Object"] = max(s, 0.0)
+
+    # --- Missing Object ---
+    # Region darker overall (negative shift) and/or a hole-like change
+    if "Missing Object" in scores:
+        s = 0.0
+        if signed_shift < -2.0:
+            s += 1.0
+        if area < 0.12 and count <= 4:
+            s += 0.3
+        scores["Missing Object"] = max(s, 0.0)
+
+    # --- Object Movement ---
+    # Similar energy but position shift → compact area, edges similar
+    if "Object Movement" in scores:
+        s = 0.0
+        if 0.002 <= area <= 0.08:
+            s += 0.6
+        if edge_change < 6.0:
+            s += 0.4
+        scores["Object Movement"] = s
+
+    # --- Object Manipulation ---
+    # Slight visual tweak of an object → small area, small shift
+    if "Object Manipulation" in scores:
+        s = 0.0
+        if 0.001 <= area <= 0.05:
+            s += 0.6
+        if abs(signed_shift) <= 4.0:
+            s += 0.3
+        scores["Object Manipulation"] = s
+
+    # --- Object Replacement ---
+    # Similar area but different texture/edge energy; often medium area
+    if "Object Replacement" in scores:
+        s = 0.0
+        if 0.006 <= area <= 0.15:
+            s += 0.6
+        if edge_change >= 6.0:
+            s += 0.6
+        scores["Object Replacement"] = s
+
+    # --- Image Anomaly ---
+    # Global/large-area change (color tone, posterization, etc.)
+    if "Image Anomaly" in scores:
+        s = 0.0
+        if area >= 0.15 or count >= 20:
+            s += 1.2
+        if edge_change >= 8.0:
+            s += 0.4
+        scores["Image Anomaly"] = s
+
+    # --- Door Anomaly ---
+    # Often tall rectangular swath near door region; boost if tall aspect
+    if "Door Anomaly" in scores:
+        s = 0.0
+        if ar >= 2.0 and bboxf >= 0.01:
+            s += 0.7
+        if 0.003 <= area <= 0.12:
+            s += 0.4
+        scores["Door Anomaly"] = s
+
+    # --- Dead Body ---
+    # Medium-ish blob lying, not extremely tall; moderate area
+    if "Dead Body" in scores:
+        s = 0.0
+        if 0.01 <= largest <= 0.12:
+            s += 0.8
+        if 0.8 <= ar <= 1.8:
+            s += 0.3
+        scores["Dead Body"] = s
+
+    # --- Other ---
+    if "Other" in scores:
+        s = 0.1 + 0.3 * float(area > 0.0)
+        scores["Other"] = s
+
+    return scores
+
+# -----------------------------
+# Public entry point
+# -----------------------------
+def rank_anomaly_types(
     heatmap_path: str,
-    classification_map_path: str,
-    region_name: str,                         # from your template region["class_name"]
-    bw_mask: np.ndarray,                      # from convert_to_black_white_fullsize
-    history_hot_flags: List[bool] | None,     # last N booleans for this region (optional)
+    *,
+    bw_mask: Optional[np.ndarray] = None,
     baseline_bgr: Optional[np.ndarray] = None,
-    current_bgr: Optional[np.ndarray] = None,
-    distance_cap: int = 64,
-    weights: Dict[str, float] = WEIGHTS,
-    logger = print,
-) -> List[Tuple[str, float]]:
+    current_bgr:  Optional[np.ndarray] = None,
+    labels: Optional[List[str]] = None,
+    room: Optional[str] = None,
+    density_cap: int = 64,           # kept for selector API compatibility
+    known_conf_threshold: float = 0.60,
+    max_sig_distance: int = 6,       # <-- JSON match threshold (like before)
+) -> Tuple[bool, List[Dict[str, object]]]:
     """
-    Returns: list of (label, score) sorted DESC
-    Also logs a short breakdown to help you tune.
+    Return (is_known, ranked_details)
+      ranked_details = [{"label": str, "distance": Optional[int], "confidence": float}, ...]
+    Priority:
+      1) If dhash matches classification_map.json within max_sig_distance -> return that label.
+      2) Else compute heuristic scores from mask / baseline/current features.
     """
-    # S1: signature
-    sig_scores = _signature_scores(heatmap_path, classification_map_path, distance_cap)
 
-    # S2: region prior
-    prior = _region_prior(region_name)
+    # 0) labels list
+    if labels is None:
+        labels = DEFAULT_LABEL_ORDER
 
-    # S3: shape features → shape scores
-    feat = _mask_features(bw_mask)
-    shape_scores = _shape_scores(feat)
+    # 1) --- MEMORY LOOKUP (classification_map.json) ---
+    # Try to match the current heatmap by dhash against previously confirmed signatures.
+    mapping = _load_map()
+    sig = _dhash_signature(heatmap_path)
+    if sig and mapping:
+        best_label, best_dist = None, 1_000_000
+        for known_sig, label in mapping.items():
+            d = _hamming(sig, known_sig)
+            if d < best_dist:
+                best_label, best_dist = label, d
 
-    # S4: temporal
-    temporal_scores = _temporal_scores(history_hot_flags or [])
+        if best_label is not None and best_dist <= max_sig_distance:
+            # Winner first, then the rest
+            ranked = [{"label": best_label, "distance": best_dist, "confidence": 1.0}]
+            ranked += [
+                {"label": L, "distance": None, "confidence": 0.0}
+                for L in labels if L != best_label
+            ]
+            return True, ranked
 
-    # S5: colorish
-    colorish = _colorish_scores(current_bgr, baseline_bgr)
+    # 2) --- HEURISTICS PATH (no confident JSON match) ---
+    # Build/derive a binary mask (white=change) if not provided
+    mask = None
+    if bw_mask is not None:
+        mask = (bw_mask > 0).astype(np.uint8) * 255
+    else:
+        img = cv2.imread(heatmap_path)
+        if img is not None:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            t_otsu, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            t = max(t_otsu, 200)  # keep only bright whites from your overlay
+            _, mask = cv2.threshold(gray, int(t), 255, cv2.THRESH_BINARY)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=1)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8), iterations=1)
 
-    # combine with weights
-    combined: Dict[str, float] = {}
-    for lbl in ANOMALY_LABELS:
-        combined[lbl] = (
-            weights["signature"] * sig_scores.get(lbl, 0.0) +
-            weights["region"]    * prior.get(lbl, 0.0) +
-            weights["shape"]     * shape_scores.get(lbl, 0.0) +
-            weights["temporal"]  * temporal_scores.get(lbl, 0.0) +
-            weights["colorish"]  * colorish.get(lbl, 0.0)
-        )
+    if mask is None:
+        # Nothing to go on → uniform small probabilities
+        ranked = [{"label": L, "distance": None, "confidence": 1.0 / len(labels)} for L in labels]
+        return False, ranked
 
-    ranked = sorted(combined.items(), key=lambda x: x[1], reverse=True)
+    # 3) Feature extraction
+    ms = _component_stats(mask)
+    signed_shift = _signed_intensity_shift(baseline_bgr, current_bgr)
+    edge_change  = _edge_delta(baseline_bgr, current_bgr)
 
-    # log a compact breakdown
-    if logger:
-        logger("— ranking breakdown —")
-        logger(f"region='{region_name}' feat={feat}")
-        top_show = 6
-        for lbl, sc in ranked[:top_show]:
-            logger(f"  {lbl:>20}  score={sc:5.3f} | sig={sig_scores.get(lbl,0):.2f} rg={prior.get(lbl,0):.2f} sh={shape_scores.get(lbl,0):.2f} tm={temporal_scores.get(lbl,0):.2f} col={colorish.get(lbl,0):.2f}")
+    # 4) Score & normalize
+    raw_scores = _score_labels(ms, signed_shift, edge_change, room, labels)
+    confs = _normalize_scores(raw_scores)
 
-    return ranked
+    ranked = [{"label": L, "distance": None, "confidence": float(confs.get(L, 0.0))} for L in labels]
+    ranked.sort(key=lambda x: x["confidence"], reverse=True)
+
+    is_known = ranked[0]["confidence"] >= known_conf_threshold
+    return is_known, ranked

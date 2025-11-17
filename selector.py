@@ -14,7 +14,7 @@ from backend import (
     ANOMALY_POSITIONS,
 )
 import time 
-from logic_ranker import rank_labels_for_anomaly
+from logic_ranker import rank_anomaly_types
 
 try:
     from backend import read_center_status as _backend_read_center_status
@@ -71,9 +71,7 @@ def _interpret_center_status(msg: str) -> str:
     for ch in m:
         if ch.isalnum() or ch.isspace():
             keep.append(ch)
-    s = " ".join("".join(keep).split())  # collapse whitespace
-
-    # convenience stems
+    s = " ".join("".join(keep).split()) 
     has_anomal  = ("anomal" in s)               # anomaly/anomalies
     has_detect  = ("detect" in s)               # detected/detecting/detection
     has_no      = (" no " in f" {s} ") or s.startswith("no ")
@@ -81,20 +79,12 @@ def _interpret_center_status(msg: str) -> str:
     has_center  = ("center" in s) or ("centre" in s)
     has_standby = ("stand by" in s) or ("standby" in s)
 
-    # --- Positive / "detected" cases ---
-    # 1) explicit anomaly + detected
     if has_anomal and has_detect:
         return 'detected'
-    # 2) many UIs show "please stand by" during detection
     if has_anomal and has_standby:
         return 'detected'
-    # 3) sometimes just "detected" (keep as a weaker positive)
     if has_detect and not has_no:
         return 'detected'
-
-    # --- Negative / "none" cases ---
-    # Allow variants like "no anomaly detected", "no anomalies found",
-    # with or without "in the center of the screen".
     if has_no and has_anomal and (has_found or has_detect or has_center):
         return 'none'
     # Fallback: strong "no anomalies" even without other words
@@ -110,8 +100,8 @@ def select_and_click_until_detected(
     read_center_status,
     click_fn=None,
     wait_seconds: int = 5,
-    poll_total: float = 2.5,   # extra time to poll after the initial wait
-    poll_step: float = 0.25,   # poll interval
+    poll_total: float = 2.5,  
+    poll_step: float = 0.25,  
 ):
     """
     Try anomaly types (most likely → least likely), click each, and wait for detection.
@@ -128,7 +118,6 @@ def select_and_click_until_detected(
         except Exception:
             pass
 
-    # Choose click fn
     if click_fn is None:
         click_fn = _safe_click
 
@@ -161,8 +150,6 @@ def select_and_click_until_detected(
 
         norm = _interpret_center_status(status_raw)
         print(f"[TRY {idx}] Center status: '{status_raw}' → {norm}")
-
-        # If unclear, poll a few times quickly (more robust than a single read)
         if norm == 'unknown' and poll_total > 0 and poll_step > 0:
             t_end = time.time() + poll_total
             while time.time() < t_end:
@@ -205,7 +192,6 @@ def _rank_labels_for_heatmap(heatmap_path: str,
 
     sig = _dhash_signature(heatmap_path)
     if sig is None:
-        # No signature -> fall back to default order with zero confidence
         ranked_details = [{"label": L, "distance": None, "confidence": 0.0}
                           for L in DEFAULT_LABEL_ORDER]
         return False, ranked_details
@@ -223,11 +209,8 @@ def _rank_labels_for_heatmap(heatmap_path: str,
         cur = best_per_label.get(label)
         if cur is None or d < cur:
             best_per_label[label] = d
-
-    # Build details for seen labels (with distance) and unseen (None distance)
     seen = []
     for L, d in best_per_label.items():
-        # confidence: smaller distance → closer to 1; cap by distance_cap
         d_cap = min(d, distance_cap)
         conf = max(0.0, 1.0 - (d_cap / float(distance_cap)))
         seen.append({"label": L, "distance": d, "confidence": conf})
@@ -282,14 +265,20 @@ def select_by_rank(
     if read_center_status is None or not callable(read_center_status):
         log("read_center_status callable is required for detection loop.")
         return None
-
-    is_known, ranked_details = _rank_labels_for_heatmap(
-        heatmap_path, max_distance=max_distance, distance_cap=distance_cap
+# WORK HERE
+# WORK HERE
+# WORK HERE
+    is_known, ranked_details = rank_anomaly_types(
+        heatmap_path=heatmap_path,
+        labels=list(ANOMALY_POSITIONS.keys()),
+        room=None,                    
     )
     if not ranked_details:
         log("No labels found to select.")
         return None
-
+# WORK HERE
+# WORK HERE
+# WORK HERE
     # Log ranking
     log("— Anomaly type ranking —")
     for item in ranked_details:
